@@ -143,6 +143,51 @@ export async function uploadDocument(
   return (await res.json()) as Attachment
 }
 
+/* ------------------------------------------------------------------ voice -- */
+
+export class TranscribeError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'TranscribeError'
+  }
+}
+
+/**
+ * Sends a recording for transcription.
+ *
+ * The blob is already 16 kHz mono PCM WAV — `voice/recorder.ts` decodes and
+ * resamples in the browser, since Chrome has the codec and the backend does not.
+ */
+export async function transcribeAudio(wav: Blob, signal?: AbortSignal): Promise<string> {
+  const res = await fetch('/api/transcribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'audio/wav' },
+    body: wav,
+    signal,
+  })
+
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new TranscribeError(body.error ?? `Transcription failed (HTTP ${res.status}).`, res.status)
+  }
+
+  const { text } = (await res.json()) as { text: string }
+  return text
+}
+
+/**
+ * Asks the backend to load the speech model early.
+ *
+ * Fire-and-forget: the recording still works if this never lands, it just pays
+ * the model load on the first transcription instead.
+ */
+export function warmTranscription(): void {
+  void fetch('/api/transcribe/warm', { method: 'POST' }).catch(() => {})
+}
+
 /* ------------------------------------------------------------------- chat -- */
 
 export interface StreamChatInput {

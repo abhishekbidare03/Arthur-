@@ -16,8 +16,8 @@ VRAM**, which drives most of the design decisions in this repo.
 | 2 | Local inference wiring | ✅ Complete |
 | 3 | Conversation persistence | ✅ Complete |
 | 4 | File input (text only) | ✅ Complete |
-| 5 | Voice in/out | ⬜ Next |
-| 6 | Packaging & launcher | ⬜ |
+| 5 | Voice in/out | ✅ Complete |
+| 6 | Packaging & launcher | ⬜ Next |
 | 7 | Polish | 🟡 Markdown + code blocks done early |
 | 8 | RAG core (chunking, embeddings, hybrid retrieval) | 🟡 Core done, citation UI pending |
 | 9–10 | Collections, advanced formats | ⬜ |
@@ -65,6 +65,23 @@ Scanned PDFs with no text layer, and image-only decks, are refused by name rathe
 empty — OCR arrives in Phase 10. `.docx` and `.xlsx` name their phase; legacy `.doc`/`.ppt`/`.xls`
 say to re-save instead.
 
+## Voice
+
+**Dictate** with the mic button: press to record, press again to stop. The transcript lands in
+the composer **editable** — never sent for you — so a misheard word is a one-word fix rather than
+a re-record. Speech recognition is `whisper-tiny.en` running on CPU through ONNX, ~3.7× realtime
+here, with the model cached on E: beside the others.
+
+`tiny.en` rather than `base.en` because it measured *better*, not just faster: on a deliberately
+awkward test sentence it got "Kubernetes" right where `base.en` produced "Kibernets", while being
+60% quicker and half the size.
+
+**Read aloud** any answer with the speaker button. This uses the voices Windows already ships,
+through the browser — no model, no download. Markdown is stripped to prose first, so a code block
+is announced rather than read out backtick by backtick. Voices that synthesize over the network
+(Chrome's "Google …" ones) are filtered out; if a machine has *only* those, the button hides
+itself rather than quietly making a network call.
+
 ## Effort tiers
 
 Three user-selectable levels, each a different local model rather than one model with a
@@ -82,7 +99,8 @@ separate collapsible panel.
 ## Stack
 
 React 19 · TypeScript · Vite 7 · Tailwind v4 · Express 5 · Ollama · SQLite · sqlite-vec ·
-pdfjs-dist · transformers.js (bge-small-en-v1.5, CPU-only embeddings)
+pdfjs-dist · transformers.js (bge-small-en-v1.5 embeddings and whisper-tiny.en speech, both
+CPU-only)
 
 No Rust, no MSVC, no Python — every dependency installs from npm with prebuilt binaries.
 
@@ -162,6 +180,15 @@ Two jsdom tests, both asserting against the rendered DOM:
   conversation database and checks they come out as real code blocks.
 - **`attachments.test.tsx`** picks a file in the composer and checks the chip, the document id
   on the request, and the truncation warning.
+- **`voice.test.tsx`** drives the mic button with the browser audio APIs mocked, checking the
+  recorder opens the mic, uploads WAV, releases the device afterwards, and leaves the transcript
+  editable rather than sending it.
+
+`backend/voice.test.mts` builds real WAVs for each case that actually differs — an 18-byte `fmt `
+chunk (what Windows writes, and what a fixed-offset reader decodes as garbage), an unexpected
+chunk before `data`, stereo downmix, unsigned 8-bit, resampling — then synthesizes real speech
+and transcribes it through the real model. It also pins the silence case: whisper *hallucinates*
+on silence rather than returning nothing, so the gate checks the audio, not the transcript.
 
 Both exist because bugs in this layer are invisible from the backend: `/api/chat` streamed
 correctly and SQLite stored every answer while the UI was showing nothing at all.

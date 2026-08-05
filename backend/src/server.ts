@@ -6,13 +6,15 @@
  */
 
 import express from 'express'
-import { MAX_UPLOAD_BYTES, PORT } from './config.ts'
+import { MAX_AUDIO_BYTES, MAX_UPLOAD_BYTES, PORT } from './config.ts'
 import { closeDb } from './db/index.ts'
 import { attachmentsForConversation, claimDocument, getDocument, linkMessageDocument } from './db/documents.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
 import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
 import { ingestDocument } from './rag/ingest.ts'
 import { warmEmbeddings } from './rag/embed.ts'
+import { MAX_AUDIO_SECONDS, transcribe, warmTranscription } from './voice/transcribe.ts'
+import { UnreadableAudioError } from './voice/types.ts'
 import {
   createConversation,
   deleteConversation,
@@ -200,6 +202,71 @@ app.post(
     }
   },
 )
+
+/* ------------------------------------------------------------------- voice -- */
+
+/**
+ * Transcribe a recording.
+ *
+ * Raw PCM WAV in the body, same shape as `POST /api/documents` — no multipart
+ * parser dependency, and no base64 round-trip inflating audio by a third.
+ *
+ * The browser resamples to 16 kHz mono before uploading. That is not laziness
+ * on the backend's part: Chrome has a full Opus decoder and resampler built in
+ * (`OfflineAudioContext`), the backend does not, and shipping one to redo work
+ * the browser already did would be a dependency bought for nothing. It also
+ * cuts the upload to roughly a tenth of the raw capture.
+ */
+app.post(
+  '/api/transcribe',
+  express.raw({ type: '*/*', limit: MAX_AUDIO_BYTES }),
+  async (req, res) => {
+    const audio = req.body as Buffer
+    if (!Buffer.isBuffer(audio) || audio.byteLength === 0) {
+      res.status(400).json({ error: 'The recording is empty.' })
+      return
+    }
+
+    try {
+      const result = await transcribe({ audio })
+
+      if (result.audioMs > MAX_AUDIO_SECONDS * 1000) {
+        res.status(413).json({
+          error: `That recording is ${Math.round(result.audioMs / 1000)} seconds long; the limit is ${MAX_AUDIO_SECONDS}.`,
+        })
+        return
+      }
+
+      // Silence, or a room tone whisper heard nothing in. Reported as its own
+      // case rather than an empty string the UI would paste into the composer.
+      if (result.text.length === 0) {
+        res.status(422).json({ error: 'No speech was detected in that recording.' })
+        return
+      }
+
+      console.log(
+        `[voice] ${result.audioMs} ms audio → ${result.elapsedMs} ms transcribe ` +
+          `(${(result.audioMs / Math.max(result.elapsedMs, 1)).toFixed(1)}× realtime)`,
+      )
+      res.json(result)
+    } catch (error) {
+      if (error instanceof UnreadableAudioError) {
+        res.status(422).json({ error: error.message })
+        return
+      }
+      console.error('[voice] transcription failed:', error)
+      res.status(500).json({ error: 'That recording could not be transcribed.' })
+    }
+  },
+)
+
+/** Loads the speech model before it is needed, so the first mic press does not
+ *  pay for it. Called by the UI when the mic button is first used — not at
+ *  startup, since most sessions never record anything. */
+app.post('/api/transcribe/warm', (_req, res) => {
+  warmTranscription()
+  res.status(202).end()
+})
 
 /* -------------------------------------------------------------------- chat -- */
 

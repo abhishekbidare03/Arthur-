@@ -427,6 +427,30 @@
     opacity: 0.4;
   }
 
+  /* Recording. The pulse is the only thing on screen saying the mic is open,
+     so it stays visible rather than fading to nothing at the trough — and it
+     is disabled under reduced-motion, where a steady accent still reads as
+     active. */
+  .btn-icon[data-recording] {
+    color: var(--accent);
+    background: var(--fill-hover);
+    animation: mic-pulse 1.4s var(--ease-out) infinite;
+  }
+  @keyframes mic-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .btn-icon[data-recording] {
+      animation: none;
+    }
+  }
+
   /* Send button: circular, springs in when it becomes usable. */
   .btn-send {
     display: inline-flex;

@@ -47,6 +47,16 @@ export const DOCUMENTS_DIR = join(dirname(DB_PATH), 'documents')
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 /**
+ * Hard ceiling on one voice recording.
+ *
+ * 16 kHz mono 16-bit PCM is 32 kB per second, so this is roughly four minutes
+ * — comfortably past the two-minute limit `voice/transcribe.ts` enforces on
+ * the audio itself, since this only exists to stop something absurd being read
+ * into memory before that check can run.
+ */
+export const MAX_AUDIO_BYTES = 8 * 1024 * 1024
+
+/**
  * The tray app's server. We *connect* to it and never spawn our own — a second
  * `ollama serve` holds port 11434 and puts the tray app into a silent crash
  * loop (see `logs.md`, Session 1).

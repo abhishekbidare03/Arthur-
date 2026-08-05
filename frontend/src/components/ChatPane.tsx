@@ -4,6 +4,7 @@ import { tierInfo } from '../types'
 import AttachmentChip from './AttachmentChip'
 import { AlertIcon } from './icons'
 import Markdown from './Markdown'
+import SpeakButton from './SpeakButton'
 import ThinkingPanel from './ThinkingPanel'
 
 interface ChatPaneProps {
@@ -102,13 +103,24 @@ export default function ChatPane({
 
                 {shortfall.length > 0 && (
                   <p className="mt-1.5 max-w-[85%] text-right text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
-                    {shortfall.map((o) =>
-                      o.state === 'dropped'
-                        ? `${o.filename} did not fit in the context window and was not sent.`
-                        : `${o.filename} was truncated — the model saw the first ${Math.round(
-                            (o.keptChars / o.totalChars) * 100,
-                          )}%.`,
-                    ).join(' ')}
+                    {shortfall.map((o) => {
+                      if (o.state === 'dropped') {
+                        return `${o.filename} did not fit in the context window and was not sent.`
+                      }
+                      // Retrieval is not truncation and must not be described as
+                      // it: the model saw the passages that matter to *this*
+                      // question, drawn from anywhere in the file, rather than
+                      // a prefix that stops partway through.
+                      if (o.state === 'retrieved') {
+                        const n = o.chunksUsed ?? 0
+                        return `${o.filename} is too large to send whole — the ${n} most relevant passage${
+                          n === 1 ? '' : 's'
+                        } were used.`
+                      }
+                      return `${o.filename} was truncated — the model saw the first ${Math.round(
+                        (o.keptChars / o.totalChars) * 100,
+                      )}%.`
+                    }).join(' ')}
                   </p>
                 )}
               </div>
@@ -150,6 +162,14 @@ export default function ChatPane({
                 <p className="mt-2 text-[12px] italic" style={{ color: 'var(--text-tertiary)' }}>
                   Stopped
                 </p>
+              )}
+
+              {/* Only once the answer is complete — reading a half-streamed
+                  message would speak a sentence that is still being written. */}
+              {m.content && !isStreaming && !m.error && (
+                <div className="mt-1 -ml-1.5">
+                  <SpeakButton content={m.content} />
+                </div>
               )}
 
               {m.error && (

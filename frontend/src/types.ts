@@ -91,9 +91,18 @@ export interface Attachment {
 export interface AttachmentOutcome {
   id: string
   filename: string
-  state: 'full' | 'truncated' | 'dropped'
+  /**
+   * `full`, `truncated` and `retrieved` all reached the model; `dropped` did
+   * not. `retrieved` means the file was too large to send whole, so the
+   * passages most relevant to the question were selected instead — which is
+   * genuinely different from `truncated`, where the model saw a prefix and
+   * nothing past it.
+   */
+  state: 'full' | 'truncated' | 'retrieved' | 'dropped'
   keptChars: number
   totalChars: number
+  /** Set only for `retrieved` — how many passages were selected. */
+  chunksUsed?: number
 }
 
 export interface Message {

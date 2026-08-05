@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx extractors.test.mts && tsx buildContext.test.mts && tsx rag.test.mts"
+    "test": "tsx extractors.test.mts && tsx buildContext.test.mts && tsx rag.test.mts && tsx voice.test.mts"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
