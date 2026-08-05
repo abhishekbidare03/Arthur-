@@ -86,12 +86,12 @@ Tasks:
 
 ---
 
-## Phase 3 — Conversation Persistence
+## Phase 3 — Conversation Persistence ✅ COMPLETE (2026-08-05)
 **Goal:** Durable local history.
 
 Tasks:
-- [ ] Add `better-sqlite3` to the backend (ships prebuilt binaries for Node 22 — no MSVC needed; `node:sqlite` is the fallback). SQLite at `E:\Arthur\data\arthur.db`
-- [ ] **Create the full RAG-ready schema now** — see `docs/rag-architecture.md`. Creating these tables early costs little; adding them later means migrating every existing message.
+- [x] Add `better-sqlite3` to the backend (ships prebuilt binaries for Node 22 — no MSVC needed; `node:sqlite` is the fallback). SQLite at `E:\Arthur\data\arthur.db`
+- [x] **Create the full RAG-ready schema now** — see `docs/rag-architecture.md`. Creating these tables early costs little; adding them later means migrating every existing message.
   - `collections (id, name, description, created_at)`
   - `conversations (id, title, tier, collection_id NULL, created_at, updated_at)`
   - `messages (id, conversation_id, role, content, thinking, model, created_at)`
@@ -99,13 +99,22 @@ Tasks:
   - `message_documents (message_id, document_id)`
   - `chunks`, `chunk_vectors`, `message_sources` — created empty, unused until Phase 8
   - `thinking` and `model` on messages are needed so a reloaded conversation can re-render the thinking panel and show which tier produced each reply
-- [ ] Sidebar reads conversation list from DB instead of mock data
-- [ ] New chat → creates DB row; every send/receive persists a message row
-- [ ] Load conversation on click → populate `ChatPane` from DB
-- [ ] Delete/rename conversation from sidebar context menu
-- [ ] Auto-generate a conversation title from the first message (small local prompt, or just first N chars)
+- [x] Sidebar reads conversation list from DB instead of mock data — `mockData.ts` deleted
+- [x] New chat → creates DB row; every send/receive persists a message row
+- [x] Load conversation on click → populate `ChatPane` from DB
+- [x] Delete/rename conversation from sidebar context menu — rename is inline (pencil or double-click; Enter or blur commits, Escape cancels)
+- [x] Auto-generate a conversation title from the first message — **text-derived, not model-generated**; see `backend/src/titles.ts` for why the model route is the wrong trade on this hardware
 
-**Exit criteria:** Close and reopen the app — history is intact.
+**One deviation from the list above:** `chunk_vectors` is **not** created. It is a `sqlite-vec` virtual table (`vec0(embedding float[384])`) and SQLite cannot create a virtual table whose module is not loaded — the extension does not arrive until Phase 8. Everything it references (`chunks`, `message_sources`) does exist, so adding it later is additive, not a migration. Noted in `schema.sql`.
+
+**Beyond the list:**
+- [x] `messages.stats` and `messages.stopped` columns — so a reloaded chat can show Phase 7's latency readout and distinguish a stopped reply from a complete one, without a later migration
+- [x] The assistant row is written **before** streaming and filled in as it completes, so a partial answer survives a crash or a closed window
+- [x] WAL journaling, `foreign_keys = ON`, and a WAL checkpoint on shutdown so `arthur.db` is self-contained for backup
+
+**Verified:** history intact across a real backend kill/restart (9 checks — conversation, renamed title, tier, message count, role ordering, content, model, stats, sequence) · follow-up turns answer from stored history · cascade delete removes messages · rename persists · stop mid-stream stores the partial answer flagged `stopped` (559 chars) · title derivation strips markdown and cuts on sentence/word boundaries · `tsc` and `npm run build` pass both halves.
+
+**Exit criteria:** ✅ Close and reopen the app — history is intact.
 
 ---
 

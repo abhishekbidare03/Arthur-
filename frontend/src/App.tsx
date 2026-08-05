@@ -4,8 +4,15 @@ import InputBar from './components/InputBar'
 import OllamaBanner from './components/OllamaBanner'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
-import { checkHealth, streamChat, type HealthStatus } from './api'
-import { mockConversations, mockMessages } from './mockData'
+import {
+  checkHealth,
+  deleteConversation as apiDeleteConversation,
+  fetchConversations,
+  fetchMessages,
+  renameConversation as apiRenameConversation,
+  streamChat,
+  type HealthStatus,
+} from './api'
 import { DEFAULT_TIER, tierInfo, type Conversation, type Message, type Tier } from './types'
 
 type Theme = 'light' | 'dark'
@@ -17,11 +24,21 @@ function greeting(): string {
   return 'Good evening'
 }
 
+/**
+ * Key used for a conversation the backend has not created yet.
+ *
+ * A brand-new chat streams before its row exists — the backend assigns the id
+ * and reports it in the `start` event. Messages are staged under this key and
+ * moved to the real id the moment it arrives.
+ */
+const DRAFT = '__draft__'
+
 export default function App() {
-  const [conversations, setConversations] = useState<Conversation[]>(mockConversations)
-  const [messagesByConversation, setMessagesByConversation] =
-    useState<Record<string, Message[]>>(mockMessages)
-  const [activeId, setActiveId] = useState<string | null>(mockConversations[0]?.id ?? null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [messagesByConversation, setMessagesByConversation] = useState<Record<string, Message[]>>({})
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [loadedIds, setLoadedIds] = useState<Set<string>>(() => new Set())
+
   const [collapsed, setCollapsed] = useState(false)
   const [tier, setTier] = useState<Tier>(DEFAULT_TIER)
   const [theme, setTheme] = useState<Theme>(() =>
@@ -30,6 +47,7 @@ export default function App() {
 
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [streamingId, setStreamingId] = useState<string | null>(null)
+  const [loadingMessages, setLoadingMessages] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   /**
@@ -49,8 +67,14 @@ export default function App() {
     setHealth(await checkHealth())
   }, [])
 
+  // Initial load: conversation list and Ollama status.
   useEffect(() => {
     void refreshHealth()
+    void fetchConversations()
+      .then(setConversations)
+      .catch(() => {
+        // The backend is down; the banner already covers this case.
+      })
   }, [refreshHealth])
 
   // Abort any in-flight generation if the window goes away, so the model is not
@@ -75,28 +99,72 @@ export default function App() {
   )
 
   // Selecting a conversation adopts the tier it was last used with, so reopening
-  // an old chat does not silently answer at a different effort level.
-  function handleSelect(id: string) {
+  // an old chat never silently answers at a different effort level.
+  async function handleSelect(id: string) {
     if (streamingId) return
     setActiveId(id)
+
     const conv = conversations.find((c) => c.id === id)
     if (conv) setTier(conv.tier)
+
+    // Messages are fetched once per conversation and cached thereafter.
+    if (loadedIds.has(id)) return
+    setLoadingMessages(true)
+    try {
+      const messages = await fetchMessages(id)
+      setMessagesByConversation((prev) => ({ ...prev, [id]: messages }))
+      setLoadedIds((prev) => new Set(prev).add(id))
+    } catch {
+      setMessagesByConversation((prev) => ({ ...prev, [id]: [] }))
+    } finally {
+      setLoadingMessages(false)
+    }
   }
 
   function handleNewChat() {
     if (streamingId) return
     setActiveId(null)
-  }
-
-  function handleDelete(id: string) {
-    if (id === activeId && streamingId) abortRef.current?.abort()
-    setConversations((prev) => prev.filter((c) => c.id !== id))
+    // Clear any abandoned draft so a new chat never inherits stale bubbles.
     setMessagesByConversation((prev) => {
       const next = { ...prev }
-      delete next[id]
+      delete next[DRAFT]
       return next
     })
+  }
+
+  async function handleDelete(id: string) {
+    if (id === activeId && streamingId) abortRef.current?.abort()
+
+    // Optimistic: the row is gone from the UI immediately, and restored only if
+    // the request fails.
+    const previous = conversations
+    setConversations((prev) => prev.filter((c) => c.id !== id))
     if (activeId === id) setActiveId(null)
+
+    try {
+      await apiDeleteConversation(id)
+      setMessagesByConversation((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+    } catch {
+      setConversations(previous)
+    }
+  }
+
+  async function handleRename(id: string, title: string) {
+    const trimmed = title.trim()
+    const current = conversations.find((c) => c.id === id)
+    if (!trimmed || !current || trimmed === current.title) return
+
+    const previous = conversations
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title: trimmed } : c)))
+    try {
+      await apiRenameConversation(id, trimmed)
+    } catch {
+      setConversations(previous)
+    }
   }
 
   function handleStop() {
@@ -108,40 +176,29 @@ export default function App() {
 
     const now = new Date().toISOString()
     const info = tierInfo(tier)
-    let conversationId = activeId
 
-    if (!conversationId) {
-      conversationId = `c${Date.now()}`
-      setConversations((prev) => [
-        {
-          id: conversationId!,
-          // Phase 3 replaces this with a generated title.
-          title: text.length > 40 ? `${text.slice(0, 40).trimEnd()}…` : text,
-          tier,
-          createdAt: now,
-          updatedAt: now,
-        },
-        ...prev,
-      ])
-      setActiveId(conversationId)
-    } else {
-      setConversations((prev) =>
-        prev.map((c) => (c.id === conversationId ? { ...c, updatedAt: now, tier } : c)),
-      )
-    }
+    // Until the `start` event arrives, a new chat has no id — stage it.
+    const isNewChat = activeId === null
+    let key = isNewChat ? DRAFT : activeId!
+
+    const tempUserId = `tmp-u-${Date.now()}`
+    const tempAssistantId = `tmp-a-${Date.now()}`
+
+    // Tracks the assistant row's *current* id. It starts as the temporary one
+    // and is replaced when `start` reports the id the database assigned, so the
+    // terminal handlers below always patch the right row.
+    let assistantId = tempAssistantId
 
     const userMessage: Message = {
-      id: `m${Date.now()}`,
-      conversationId,
+      id: tempUserId,
+      conversationId: key,
       role: 'user',
       content: text,
       createdAt: now,
     }
-
-    const assistantId = `m${Date.now() + 1}`
     const assistantMessage: Message = {
-      id: assistantId,
-      conversationId,
+      id: tempAssistantId,
+      conversationId: key,
       role: 'assistant',
       content: '',
       model: info.model,
@@ -149,17 +206,11 @@ export default function App() {
       streaming: true,
     }
 
-    // The history sent to the model is everything *before* the empty
-    // placeholder — the placeholder itself must never be sent.
-    const history = [...(messagesByConversation[conversationId] ?? []), userMessage]
-      .filter((m) => !m.error && m.content.trim().length > 0)
-      .map((m) => ({ role: m.role, content: m.content }))
-
     setMessagesByConversation((prev) => ({
       ...prev,
-      [conversationId]: [...(prev[conversationId] ?? []), userMessage, assistantMessage],
+      [key]: [...(prev[key] ?? []), userMessage, assistantMessage],
     }))
-    setStreamingId(assistantId)
+    setStreamingId(tempAssistantId)
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -180,8 +231,8 @@ export default function App() {
       pendingThinking = ''
       setMessagesByConversation((prev) => ({
         ...prev,
-        [conversationId]: (prev[conversationId] ?? []).map((m) =>
-          m.id === assistantId
+        [key]: (prev[key] ?? []).map((m) =>
+          m.id === tempAssistantId
             ? {
                 ...m,
                 content: m.content + content,
@@ -197,8 +248,45 @@ export default function App() {
     }
 
     try {
-      for await (const event of streamChat({ messages: history, tier }, controller.signal)) {
-        if (event.type === 'content') {
+      for await (const event of streamChat(
+        { ...(isNewChat ? {} : { conversationId: key }), content: text, tier },
+        controller.signal,
+      )) {
+        if (event.type === 'start') {
+          // Adopt the ids the database assigned. For a new chat this also moves
+          // the staged messages from the draft key onto the real conversation.
+          const realId = event.conversationId
+
+          setMessagesByConversation((prev) => {
+            const staged = (prev[key] ?? []).map((m) =>
+              m.id === tempUserId
+                ? { ...m, id: event.userMessageId, conversationId: realId }
+                : m.id === tempAssistantId
+                  ? { ...m, id: event.assistantMessageId, conversationId: realId }
+                  : m,
+            )
+            const next = { ...prev, [realId]: staged }
+            if (key !== realId) delete next[key]
+            return next
+          })
+
+          if (isNewChat) {
+            setConversations((prev) => [
+              { id: realId, title: event.title, tier, createdAt: now, updatedAt: now },
+              ...prev.filter((c) => c.id !== realId),
+            ])
+            setActiveId(realId)
+            setLoadedIds((prev) => new Set(prev).add(realId))
+          } else {
+            setConversations((prev) =>
+              prev.map((c) => (c.id === realId ? { ...c, updatedAt: now, tier } : c)),
+            )
+          }
+
+          key = realId
+          assistantId = event.assistantMessageId
+          setStreamingId(event.assistantMessageId)
+        } else if (event.type === 'content') {
           pendingContent += event.delta
           schedule()
         } else if (event.type === 'thinking') {
@@ -208,11 +296,14 @@ export default function App() {
           if (frame !== null) cancelAnimationFrame(frame)
           flush()
           loadedModelRef.current = event.stats.model
-          patchMessage(conversationId, assistantId, { streaming: false, stats: event.stats })
+          patchMessage(key, assistantId, {
+            streaming: false,
+            stats: event.stats,
+          })
         } else if (event.type === 'error') {
           if (frame !== null) cancelAnimationFrame(frame)
           flush()
-          patchMessage(conversationId, assistantId, {
+          patchMessage(key, assistantId, {
             streaming: false,
             error: { code: event.code, message: event.message, detail: event.detail },
           })
@@ -225,12 +316,11 @@ export default function App() {
 
       // An abort leaves the loop without a terminal event, so the partial
       // message is closed out here rather than left spinning forever.
+      const finalKey = key
       setMessagesByConversation((prev) => ({
         ...prev,
-        [conversationId]: (prev[conversationId] ?? []).map((m) =>
-          m.id === assistantId && m.streaming
-            ? { ...m, streaming: false, stopped: controller.signal.aborted }
-            : m,
+        [finalKey]: (prev[finalKey] ?? []).map((m) =>
+          m.streaming ? { ...m, streaming: false, stopped: controller.signal.aborted } : m,
         ),
       }))
       setStreamingId(null)
@@ -238,7 +328,10 @@ export default function App() {
     }
   }
 
-  const isEmptyState = activeId === null || activeMessages.length === 0
+  // The greeting screen is for a genuinely new chat. Without the `loading`
+  // guard, clicking a stored conversation flashes the greeting for as long as
+  // its messages take to arrive.
+  const isEmptyState = activeId === null || (activeMessages.length === 0 && !loadingMessages)
 
   // Only warn about a reload when we know a *different* model is resident.
   const willReloadModel =
@@ -255,10 +348,12 @@ export default function App() {
         conversations={conversations}
         activeId={activeId}
         collapsed={collapsed}
+        busy={streamingId !== null}
         onToggleCollapse={() => setCollapsed((v) => !v)}
-        onSelect={handleSelect}
+        onSelect={(id) => void handleSelect(id)}
         onNewChat={handleNewChat}
-        onDelete={handleDelete}
+        onDelete={(id) => void handleDelete(id)}
+        onRename={(id, title) => void handleRename(id, title)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -272,8 +367,6 @@ export default function App() {
         />
 
         {isEmptyState ? (
-          // Home screen: centred greeting with the composer inline, the way
-          // Claude presents a new chat.
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 pb-16">
             <div
               className="w-full max-w-2xl"
@@ -295,7 +388,7 @@ export default function App() {
 
               <div style={{ animation: 'rise 560ms var(--ease-out) 80ms backwards' }}>
                 <InputBar
-                  onSend={handleSend}
+                  onSend={(t) => void handleSend(t)}
                   onStop={handleStop}
                   streaming={streamingId !== null}
                   autoFocus
@@ -318,12 +411,13 @@ export default function App() {
               streamingId={streamingId}
               tier={tier}
               willReloadModel={willReloadModel}
+              loading={loadingMessages}
             />
             <div className="composer-scrim shrink-0 px-6 pb-5 pt-3">
               <div className="mx-auto w-full max-w-3xl">
                 {banner}
                 <InputBar
-                  onSend={handleSend}
+                  onSend={(t) => void handleSend(t)}
                   onStop={handleStop}
                   streaming={streamingId !== null}
                 />

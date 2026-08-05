@@ -526,15 +526,34 @@
     background: transparent;
   }
 
-  /* Delete stays mounted and fades — mounting on hover causes layout jitter. */
-  .conv-delete {
+  .conv-title:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+
+  /* Rename in place, so the row never changes height or jumps position. */
+  .conv-rename {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0.15rem 0.3rem;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-size: 13.5px;
+    outline: none;
+    box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+
+  /* Actions stay mounted and fade — mounting on hover causes layout jitter. */
+  .conv-action {
     flex: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 1.5rem;
     height: 1.5rem;
-    margin-right: 0.3rem;
     border-radius: var(--radius-sm);
     color: var(--text-tertiary);
     opacity: 0;
@@ -544,14 +563,17 @@
       background var(--dur-fast) var(--ease-out),
       color var(--dur-fast) var(--ease-out);
   }
-  .conv-item:hover .conv-delete {
+  .conv-action:last-child {
+    margin-right: 0.3rem;
+  }
+  .conv-item:hover .conv-action {
     opacity: 1;
   }
-  .conv-delete:hover {
+  .conv-action:hover {
     background: var(--fill-active);
     color: var(--accent);
   }
-  .conv-delete:focus-visible {
+  .conv-action:focus-visible {
     opacity: 1;
   }
 

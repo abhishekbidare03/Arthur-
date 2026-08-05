@@ -5,7 +5,7 @@
  * request is a POST with a JSON body and `EventSource` can only issue GETs.
  */
 
-import type { Tier } from './types'
+import type { Conversation, Message, Tier } from './types'
 
 export interface GenerationStats {
   model: string
@@ -29,6 +29,19 @@ export type ErrorCode =
   | 'unknown'
 
 export type ChatEvent =
+  /**
+   * Always the first event. Carries the row ids the database assigned, so the
+   * client can reconcile its optimistic state with what was actually stored —
+   * and learn the id of a conversation the backend created for it.
+   */
+  | {
+      type: 'start'
+      conversationId: string
+      title: string
+      userMessageId: string
+      assistantMessageId: string
+      createdAt: string
+    }
   | { type: 'thinking'; delta: string }
   | { type: 'content'; delta: string }
   | { type: 'done'; stats: GenerationStats }
@@ -53,8 +66,43 @@ export async function checkHealth(): Promise<HealthStatus> {
   }
 }
 
+/* ------------------------------------------------------------ persistence -- */
+
+async function json<T>(input: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+  })
+  if (!res.ok) throw new Error(`${init?.method ?? 'GET'} ${input} → HTTP ${res.status}`)
+  return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
+}
+
+export function fetchConversations(): Promise<Conversation[]> {
+  return json<Conversation[]>('/api/conversations')
+}
+
+export function fetchMessages(conversationId: string): Promise<Message[]> {
+  return json<Message[]>(`/api/conversations/${conversationId}/messages`)
+}
+
+export function renameConversation(id: string, title: string): Promise<Conversation> {
+  return json<Conversation>(`/api/conversations/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function deleteConversation(id: string): Promise<void> {
+  return json<void>(`/api/conversations/${id}`, { method: 'DELETE' })
+}
+
+/* ------------------------------------------------------------------- chat -- */
+
 export interface StreamChatInput {
-  messages: { role: 'user' | 'assistant'; content: string }[]
+  /** Omitted for a new chat — the backend creates the conversation and
+   *  reports its id in the `start` event. */
+  conversationId?: string
+  content: string
   tier: Tier
 }
 

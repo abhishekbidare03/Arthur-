@@ -4,6 +4,86 @@ Chronological record of what was done, what was decided, and why. Newest session
 
 ---
 
+## Session 7 — 2026-08-05 · Phase 3 complete — conversation persistence
+
+History is durable. Close the app, reopen it, everything is there.
+
+### What was built
+
+`better-sqlite3` installed with **no compilation** — the prebuilt binary for Node 22 resolved
+straight away, so the no-MSVC constraint holds. SQLite 3.53.4, and **FTS5 is available**, which
+Phase 8's hybrid retrieval depends on.
+
+| File | Role |
+|---|---|
+| `src/db/schema.sql` | Full RAG-ready schema, created in one pass |
+| `src/db/index.ts` | Connection, pragmas, schema setup, clean shutdown |
+| `src/db/conversations.ts` | Prepared-statement CRUD for conversations and messages |
+| `src/titles.ts` | Title derivation from the first user message |
+
+REST surface: `GET/POST /api/conversations`, `GET /api/conversations/:id/messages`,
+`PATCH` (rename), `DELETE`. Frontend gained inline rename in the sidebar; `mockData.ts` is gone.
+
+### The significant design change
+
+**`/api/chat` no longer takes a `messages` array.** It takes `{ conversationId?, content, tier }`
+and reads history from the database itself. The database is now the single source of truth
+rather than whatever the browser happened to be holding.
+
+Consequences, all of them good:
+- The assistant row is written **before** streaming starts and filled in as it completes, so a
+  partial answer survives a crash or a closed window
+- The frontend cannot desynchronise its history from what is stored
+- A new SSE `start` event reports the ids the database assigned, letting the client reconcile
+  its optimistic bubbles with real rows — and learn the id of a conversation the backend
+  created for it
+
+### Decisions
+
+- **Titles are text-derived, not model-generated.** `phases.md` allowed either. The model route
+  is the wrong trade here: only one model fits in 4 GB, so titling with a *smaller* model evicts
+  the chat model and charges the user a 1–10 s reload on their next message, while titling with
+  the *same* model costs a second generation — which on High means reasoning, measured at
+  20–100 s for one line. Extraction is instant and costs no VRAM. Reasoning recorded in
+  `titles.ts`; Phase 7 can revisit.
+- **`chunk_vectors` is not created**, and cannot be. It is a `sqlite-vec` virtual table and
+  SQLite will not create a virtual table whose module is not loaded. The extension arrives in
+  Phase 8. Everything it references exists, so it stays additive.
+- **Two columns beyond the spec** — `messages.stats` and `messages.stopped`. Both would
+  otherwise force a migration: Phase 7's latency readout needs the former, and without the
+  latter a stopped reply reloads looking complete.
+- **WAL journaling with `synchronous = NORMAL`.** `FULL` fsyncs every commit and would stutter
+  during streaming; WAL means a reader is never blocked and an unclean shutdown recovers.
+  The WAL is checkpointed on `SIGINT`/`SIGTERM` so `arthur.db` stays self-contained for backup.
+- **An assistant row that produced nothing is deleted, not stored empty** — otherwise a failed
+  generation reloads as a blank bubble. The user's own message stays; they still said it.
+
+### A bug caught by testing, and a false alarm
+
+- **`model` was never persisted.** The assistant row was created before the model was known,
+  and `finishMessage` did not set it — so every reloaded conversation would have shown no tier
+  attribution, which `phases.md` explicitly requires. Now written at insert time from the tier
+  config, so even a stopped reply records which model produced it.
+- **A "failed" stop test was the test's fault, not the code's.** The abort fired at 1,200 ms
+  but the Low tier had already finished — 51 chars, exactly a completed A–Z listing. Re-run
+  against a 900-word essay it passed properly: 559 chars persisted, flagged `stopped`.
+
+### Verification
+
+Killed the backend process outright and restarted it, then checked 9 properties: conversation
+survived, renamed title survived, tier stored, message count, role ordering, content non-empty,
+model recorded, stats recorded, sequence preserved. **All pass.** Also verified follow-up turns
+answer from stored history ("What country is that in?" → "Japan"), cascade delete, and title
+derivation across markdown, long text and one-word inputs.
+
+**Still not visually confirmed** — the Claude-in-Chrome extension remains unconnected, so
+verification was again by driving the HTTP surface. Worth eyeballing the sidebar, reload and
+rename by hand.
+
+**Next:** Phase 4 — file input, text files only.
+
+---
+
 ## Session 6 — 2026-08-05 · Markdown rendering, code blocks, and a failed attempt at faster thinking
 
 **Trigger:** two complaints after using the app. Code answers arrived as one unbroken line of

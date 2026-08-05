@@ -1,14 +1,18 @@
+import { useEffect, useRef, useState } from 'react'
 import type { Conversation } from '../types'
-import { PanelIcon, PlusIcon, SettingsIcon, TrashIcon } from './icons'
+import { PanelIcon, PencilIcon, PlusIcon, SettingsIcon, TrashIcon } from './icons'
 
 interface SidebarProps {
   conversations: Conversation[]
   activeId: string | null
   collapsed: boolean
+  /** True while a reply is streaming — switching or starting a chat is blocked. */
+  busy?: boolean
   onToggleCollapse: () => void
   onSelect: (id: string) => void
   onNewChat: () => void
   onDelete: (id: string) => void
+  onRename: (id: string, title: string) => void
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -46,10 +50,10 @@ function groupByRecency(conversations: Conversation[]) {
 
   for (const c of sorted) {
     const t = new Date(c.updatedAt).getTime()
-    if (t >= todayStart) groups[0].items.push(c)
-    else if (t >= yesterdayStart) groups[1].items.push(c)
-    else if (t >= weekStart) groups[2].items.push(c)
-    else groups[3].items.push(c)
+    if (t >= todayStart) groups[0]!.items.push(c)
+    else if (t >= yesterdayStart) groups[1]!.items.push(c)
+    else if (t >= weekStart) groups[2]!.items.push(c)
+    else groups[3]!.items.push(c)
   }
 
   return groups.filter((g) => g.items.length > 0)
@@ -59,12 +63,31 @@ export default function Sidebar({
   conversations,
   activeId,
   collapsed,
+  busy = false,
   onToggleCollapse,
   onSelect,
   onNewChat,
   onDelete,
+  onRename,
 }: SidebarProps) {
   const groups = groupByRecency(conversations)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editingId) inputRef.current?.select()
+  }, [editingId])
+
+  function beginRename(c: Conversation) {
+    setEditingId(c.id)
+    setDraft(c.title)
+  }
+
+  function commitRename() {
+    if (editingId) onRename(editingId, draft)
+    setEditingId(null)
+  }
 
   // Collapsed keeps a narrow icon rail rather than vanishing, so the expand
   // affordance is always reachable.
@@ -74,7 +97,7 @@ export default function Sidebar({
         <button className="btn-icon" onClick={onToggleCollapse} aria-label="Expand sidebar" title="Expand sidebar">
           <PanelIcon />
         </button>
-        <button className="btn-icon" onClick={onNewChat} aria-label="New chat" title="New chat">
+        <button className="btn-icon" onClick={onNewChat} disabled={busy} aria-label="New chat" title="New chat">
           <PlusIcon />
         </button>
       </aside>
@@ -94,7 +117,7 @@ export default function Sidebar({
       </div>
 
       <div className="px-3 pb-3">
-        <button className="btn btn-outline w-full justify-start" onClick={onNewChat}>
+        <button className="btn btn-outline w-full justify-start" onClick={onNewChat} disabled={busy}>
           <PlusIcon className="h-4 w-4" style={{ color: 'var(--accent)' }} />
           New chat
         </button>
@@ -113,22 +136,64 @@ export default function Sidebar({
             <ul className="flex flex-col gap-0.5">
               {group.items.map((c) => (
                 <li key={c.id}>
-                  <div className="conv-item" data-active={c.id === activeId}>
-                    <button className="conv-title" onClick={() => onSelect(c.id)} title={c.title}>
-                      {c.title}
-                    </button>
-                    <button
-                      className="conv-delete"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onDelete(c.id)
-                      }}
-                      aria-label={`Delete ${c.title}`}
-                      title="Delete"
-                    >
-                      <TrashIcon className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+                  {editingId === c.id ? (
+                    <div className="conv-item" data-active={c.id === activeId}>
+                      <input
+                        ref={inputRef}
+                        className="conv-rename"
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        // Blur commits, so clicking away saves rather than
+                        // silently discarding what was typed.
+                        onBlur={commitRename}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            commitRename()
+                          }
+                          if (e.key === 'Escape') {
+                            e.preventDefault()
+                            setEditingId(null)
+                          }
+                        }}
+                        aria-label="Conversation title"
+                      />
+                    </div>
+                  ) : (
+                    <div className="conv-item" data-active={c.id === activeId}>
+                      <button
+                        className="conv-title"
+                        onClick={() => onSelect(c.id)}
+                        onDoubleClick={() => beginRename(c)}
+                        disabled={busy && c.id !== activeId}
+                        title={c.title}
+                      >
+                        {c.title}
+                      </button>
+                      <button
+                        className="conv-action"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          beginRename(c)
+                        }}
+                        aria-label={`Rename ${c.title}`}
+                        title="Rename"
+                      >
+                        <PencilIcon className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        className="conv-action conv-delete"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onDelete(c.id)
+                        }}
+                        aria-label={`Delete ${c.title}`}
+                        title="Delete"
+                      >
+                        <TrashIcon className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

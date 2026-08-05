@@ -6,8 +6,23 @@
  * (see "production ready" in `docs/rag-architecture.md`).
  */
 
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 /** Backend port. 5178 is the frontend (`chrome --app=` target), so this is 5179. */
 export const PORT = Number(process.env.ARTHUR_PORT ?? 5179)
+
+/** Project root, resolved from this file rather than `process.cwd()` — the
+ *  Phase 6 launcher will start the backend from an arbitrary directory. */
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+/**
+ * Conversation history.
+ *
+ * Lives beside the models on E: — `data/` is gitignored, and this file plus
+ * `data/documents/` is the entire backup story.
+ */
+export const DB_PATH = process.env.ARTHUR_DB ?? join(ROOT, 'data', 'arthur.db')
 
 /**
  * The tray app's server. We *connect* to it and never spawn our own — a second

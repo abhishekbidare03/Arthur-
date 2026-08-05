@@ -14,15 +14,15 @@ VRAM**, which drives most of the design decisions in this repo.
 | 0 | Model selection | ✅ Complete |
 | 1 | UI shell (static) | ✅ Complete |
 | 2 | Local inference wiring | ✅ Complete |
-| 3 | Conversation persistence | ⬜ Next |
-| 4 | File input (text only) | ⬜ |
+| 3 | Conversation persistence | ✅ Complete |
+| 4 | File input (text only) | ⬜ Next |
 | 5 | Voice in/out | ⬜ |
 | 6 | Packaging & launcher | ⬜ |
 | 7 | Polish | 🟡 Markdown + code blocks done early |
 | 8–10 | RAG over documents | ⬜ |
 
-Working chat with real streamed responses across three effort tiers. History is not yet
-persisted — that's Phase 3.
+Working chat with real streamed responses across three effort tiers, with durable local
+history in SQLite. Conversations survive restarts; rename and delete from the sidebar.
 
 ## Effort tiers
 

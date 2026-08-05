@@ -12,6 +12,8 @@ interface ChatPaneProps {
   tier: Tier
   /** True when the next reply must first swap the model in VRAM. */
   willReloadModel?: boolean
+  /** True while a stored conversation's messages are being fetched. */
+  loading?: boolean
 }
 
 /** Human-readable remedy for each backend failure code. */
@@ -35,6 +37,7 @@ export default function ChatPane({
   streamingId = null,
   tier,
   willReloadModel = false,
+  loading = false,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -66,6 +69,12 @@ export default function ChatPane({
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-3xl px-6 pb-4 pt-8">
+        {loading && messages.length === 0 && (
+          <p className="py-8 text-center text-[13px]" style={{ color: 'var(--text-tertiary)' }}>
+            Loading conversation…
+          </p>
+        )}
+
         {messages.map((m, i) => {
           if (m.role === 'user') {
             return (
