@@ -4,6 +4,12 @@ models/
 # Local database (conversation history)
 data/
 
+# Working docs — kept locally, deliberately not published.
+# They record hardware specs, local paths and session-by-session reasoning,
+# which belongs on this machine rather than in a public repo.
+logs.md
+phases.md
+
 # Node
 node_modules/
 dist/

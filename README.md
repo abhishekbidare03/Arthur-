@@ -80,12 +80,15 @@ Flash attention is a prerequisite, not an optional extra.
 
 This repo keeps its reasoning, not just its code:
 
-- **[`phases.md`](phases.md)** — the build plan, with completed phases marked up
-- **[`logs.md`](logs.md)** — chronological record of what was done and why, newest first
-- **[`docs/model-notes.md`](docs/model-notes.md)** — measured model behaviour: context
-  arithmetic, throughput, and which latency levers actually work
+- **[`docs/model-notes.md`](docs/model-notes.md)** — measured model behaviour: the KV-cache
+  arithmetic behind the context limit, per-tier throughput, and which latency levers actually
+  work (several do not)
 - **[`docs/rag-architecture.md`](docs/rag-architecture.md)** — the document/RAG design, and the
   five seams built early so it lands as an addition rather than a rewrite
+
+The build plan and the session-by-session work log are kept locally rather than published —
+they record hardware specifics and local paths. Commit messages carry the reasoning behind
+each phase.
 
 ## License
 
