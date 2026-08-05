@@ -1,0 +1,1073 @@
+@import 'tailwindcss';
+
+/* ============================================================================
+   ARTHUR — DESIGN SYSTEM
+   ----------------------------------------------------------------------------
+   Tokens first, then primitives, then components. Every interactive surface
+   defines hover / active / focus-visible / disabled states in CSS — never in
+   JavaScript event handlers.
+   ========================================================================== */
+
+@theme {
+  --font-sans:
+    'Inter var', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+
+/* ---------------------------------------------------------------- tokens -- */
+
+:root,
+:root[data-theme='light'] {
+  /* Layered surfaces rather than a single background — depth needs a ramp. */
+  --surface-0: #faf9f7;
+  --surface-1: #f4f2ee;
+  --surface-2: #ffffff;
+  --surface-3: #ffffff;
+
+  --fill-subtle: rgba(24, 22, 18, 0.035);
+  --fill-hover: rgba(24, 22, 18, 0.055);
+  --fill-active: rgba(24, 22, 18, 0.085);
+
+  --text-primary: #1a1917;
+  --text-secondary: #56534c;
+  --text-tertiary: #8a867d;
+
+  /* Alpha borders sit correctly on any surface beneath them. */
+  --border-subtle: rgba(24, 22, 18, 0.06);
+  --border-default: rgba(24, 22, 18, 0.1);
+  --border-strong: rgba(24, 22, 18, 0.16);
+
+  --accent: #cc6a4d;
+  --accent-hover: #b85739;
+  --accent-active: #a44b2f;
+  --accent-contrast: #ffffff;
+  --accent-ring: rgba(204, 106, 77, 0.32);
+  --accent-wash: rgba(204, 106, 77, 0.08);
+
+  /* Layered shadows read as real light; a single blur reads as a smudge. */
+  --shadow-xs: 0 1px 2px rgba(24, 22, 18, 0.04);
+  --shadow-sm: 0 1px 2px rgba(24, 22, 18, 0.05), 0 2px 6px rgba(24, 22, 18, 0.04);
+  --shadow-md: 0 2px 4px rgba(24, 22, 18, 0.04), 0 6px 16px rgba(24, 22, 18, 0.07);
+  --shadow-lg: 0 4px 8px rgba(24, 22, 18, 0.05), 0 16px 40px rgba(24, 22, 18, 0.11);
+  --shadow-accent: 0 2px 8px rgba(204, 106, 77, 0.26);
+
+  --scrim: rgba(250, 249, 247, 0);
+  --scrim-solid: #faf9f7;
+
+  /* Code blocks sit a step *below* the page rather than above it, so a long
+     listing reads as an inset panel instead of a floating card. */
+  --code-bg: #f6f4ef;
+  --code-head-bg: rgba(24, 22, 18, 0.028);
+
+  /* Syntax colours are desaturated to live alongside the clay accent — a
+     stock rainbow theme fights the palette. */
+  --syn-muted: #96918a;
+  --syn-keyword: #9a5b8c;
+  --syn-string: #56784f;
+  --syn-number: #b06a3f;
+  --syn-title: #3f6b96;
+  --syn-attr: #8a6d3b;
+  --syn-deletion: #b04a3f;
+}
+
+:root[data-theme='dark'] {
+  --surface-0: #1c1b19;
+  --surface-1: #161513;
+  --surface-2: #232220;
+  --surface-3: #2b2a27;
+
+  --fill-subtle: rgba(255, 253, 247, 0.04);
+  --fill-hover: rgba(255, 253, 247, 0.07);
+  --fill-active: rgba(255, 253, 247, 0.11);
+
+  --text-primary: #f3f1ec;
+  --text-secondary: #a9a59c;
+  --text-tertiary: #78746b;
+
+  --border-subtle: rgba(255, 253, 247, 0.06);
+  --border-default: rgba(255, 253, 247, 0.1);
+  --border-strong: rgba(255, 253, 247, 0.18);
+
+  --accent: #e08b6b;
+  --accent-hover: #ea9c7e;
+  --accent-active: #f0a98d;
+  --accent-contrast: #1a1310;
+  --accent-ring: rgba(224, 139, 107, 0.36);
+  --accent-wash: rgba(224, 139, 107, 0.11);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.34), 0 16px 40px rgba(0, 0, 0, 0.46);
+  --shadow-accent: 0 2px 10px rgba(224, 139, 107, 0.24);
+
+  --scrim: rgba(28, 27, 25, 0);
+  --scrim-solid: #1c1b19;
+
+  --code-bg: #151412;
+  --code-head-bg: rgba(255, 253, 247, 0.028);
+
+  --syn-muted: #6f6b63;
+  --syn-keyword: #d295c4;
+  --syn-string: #9cc088;
+  --syn-number: #e0a06b;
+  --syn-title: #86b3d9;
+  --syn-attr: #d6b57a;
+  --syn-deletion: #e0776b;
+}
+
+:root {
+  /* Expo-out: fast departure, long gentle settle. The reason motion feels
+     expensive rather than mechanical. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  --dur-fast: 130ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 13px;
+  --radius-xl: 18px;
+  --radius-2xl: 24px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --surface-0: #1c1b19;
+    --surface-1: #161513;
+    --surface-2: #232220;
+    --surface-3: #2b2a27;
+    --fill-subtle: rgba(255, 253, 247, 0.04);
+    --fill-hover: rgba(255, 253, 247, 0.07);
+    --fill-active: rgba(255, 253, 247, 0.11);
+    --text-primary: #f3f1ec;
+    --text-secondary: #a9a59c;
+    --text-tertiary: #78746b;
+    --border-subtle: rgba(255, 253, 247, 0.06);
+    --border-default: rgba(255, 253, 247, 0.1);
+    --border-strong: rgba(255, 253, 247, 0.18);
+    --accent: #e08b6b;
+    --accent-hover: #ea9c7e;
+    --accent-active: #f0a98d;
+    --accent-contrast: #1a1310;
+    --accent-ring: rgba(224, 139, 107, 0.36);
+    --accent-wash: rgba(224, 139, 107, 0.11);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.24);
+    --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.3), 0 6px 16px rgba(0, 0, 0, 0.34);
+    --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.34), 0 16px 40px rgba(0, 0, 0, 0.46);
+    --scrim-solid: #1c1b19;
+    --code-bg: #151412;
+    --code-head-bg: rgba(255, 253, 247, 0.028);
+    --syn-muted: #6f6b63;
+    --syn-keyword: #d295c4;
+    --syn-string: #9cc088;
+    --syn-number: #e0a06b;
+    --syn-title: #86b3d9;
+    --syn-attr: #d6b57a;
+    --syn-deletion: #e0776b;
+  }
+}
+
+/* ------------------------------------------------------------------ base --
+   MUST stay inside `@layer base`. Unlayered CSS outranks every layer, so an
+   unlayered `button { padding: 0 }` silently strips the padding from every
+   component-layer button rule. That exact mistake flattened this whole UI once.
+   -------------------------------------------------------------------------- */
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  ::selection {
+    background: var(--accent-wash);
+    color: var(--text-primary);
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+  }
+
+  /* One consistent focus treatment across every control. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Scrollbars recede until the region is hovered. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: transparent;
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+    transition: background var(--dur-base);
+  }
+  *:hover::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* -------------------------------------------------------------- keyframes -- */
+
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@layer components {
+  /* --------------------------------------------------------------- buttons -- */
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: var(--radius-md);
+    font-size: 13.5px;
+    font-weight: 500;
+    line-height: 1;
+    cursor: pointer;
+    white-space: nowrap;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      opacity var(--dur-fast) var(--ease-out);
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(0.975);
+  }
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    box-shadow: var(--shadow-accent);
+    padding: 0.5rem 0.9rem;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  .btn-primary:active:not(:disabled) {
+    background: var(--accent-active);
+  }
+
+  .btn-outline {
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    box-shadow: var(--shadow-xs);
+    padding: 0.5rem 0.85rem;
+  }
+  .btn-outline:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-sm);
+    transform: translateY(-1px);
+  }
+  .btn-outline:active:not(:disabled) {
+    transform: translateY(0) scale(0.985);
+    box-shadow: var(--shadow-xs);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0.45rem 0.65rem;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--fill-hover);
+    color: var(--text-primary);
+  }
+  .btn-ghost:active:not(:disabled) {
+    background: var(--fill-active);
+  }
+
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      transform var(--dur-fast) var(--ease-out),
+      opacity var(--dur-fast) var(--ease-out);
+  }
+  .btn-icon:hover:not(:disabled) {
+    background: var(--fill-hover);
+    color: var(--text-primary);
+  }
+  .btn-icon:active:not(:disabled) {
+    background: var(--fill-active);
+    transform: scale(0.93);
+  }
+  .btn-icon:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  /* Send button: circular, springs in when it becomes usable. */
+  .btn-send {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 999px;
+    background: var(--fill-active);
+    color: var(--text-tertiary);
+    cursor: not-allowed;
+    transition:
+      background var(--dur-base) var(--ease-out),
+      color var(--dur-base) var(--ease-out),
+      box-shadow var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-spring);
+  }
+  .btn-send[data-ready='true'] {
+    background: var(--accent);
+    color: var(--accent-contrast);
+    box-shadow: var(--shadow-accent);
+    cursor: pointer;
+  }
+  .btn-send[data-ready='true']:hover {
+    background: var(--accent-hover);
+    transform: scale(1.07);
+  }
+  .btn-send[data-ready='true']:active {
+    transform: scale(0.94);
+  }
+
+  /* Stop reads as neutral, not destructive — halting a reply is routine here,
+     not an error, and qwen3 can deliberate for a full minute. */
+  .btn-send[data-stop='true'] {
+    background: var(--fill-active);
+    color: var(--text-primary);
+    box-shadow: none;
+  }
+  .btn-send[data-stop='true']:hover {
+    background: var(--fill-hover);
+    transform: scale(1.07);
+  }
+
+  /* -------------------------------------------------------------- sidebar -- */
+
+  .sidebar {
+    background: var(--surface-1);
+    border-right: 1px solid var(--border-subtle);
+    transition: width var(--dur-slow) var(--ease-out);
+  }
+
+  .sidebar-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .conv-item {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+  .conv-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 3px;
+    height: 0;
+    border-radius: 0 3px 3px 0;
+    background: var(--accent);
+    transform: translateY(-50%);
+    transition: height var(--dur-base) var(--ease-spring);
+  }
+  .conv-item:hover {
+    background: var(--fill-hover);
+    color: var(--text-primary);
+  }
+  .conv-item[data-active='true'] {
+    background: var(--fill-active);
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+  .conv-item[data-active='true']::before {
+    height: 18px;
+  }
+
+  .conv-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    font-size: 13.5px;
+    cursor: pointer;
+    background: transparent;
+  }
+
+  /* Delete stays mounted and fades — mounting on hover causes layout jitter. */
+  .conv-delete {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    margin-right: 0.3rem;
+    border-radius: var(--radius-sm);
+    color: var(--text-tertiary);
+    opacity: 0;
+    cursor: pointer;
+    transition:
+      opacity var(--dur-fast) var(--ease-out),
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+  .conv-item:hover .conv-delete {
+    opacity: 1;
+  }
+  .conv-delete:hover {
+    background: var(--fill-active);
+    color: var(--accent);
+  }
+  .conv-delete:focus-visible {
+    opacity: 1;
+  }
+
+  /* --------------------------------------------------------------- topbar -- */
+
+  .topbar {
+    background: color-mix(in srgb, var(--surface-0) 78%, transparent);
+    backdrop-filter: blur(14px) saturate(1.6);
+    -webkit-backdrop-filter: blur(14px) saturate(1.6);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .tier-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.4rem 0.6rem 0.4rem 0.7rem;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    color: var(--text-primary);
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .tier-trigger:hover {
+    background: var(--fill-hover);
+  }
+  .tier-trigger[aria-expanded='true'] {
+    background: var(--fill-active);
+  }
+  .tier-trigger .chevron {
+    transition: transform var(--dur-base) var(--ease-out);
+    color: var(--text-tertiary);
+  }
+  .tier-trigger[aria-expanded='true'] .chevron {
+    transform: rotate(180deg);
+  }
+
+  .popover {
+    background: var(--surface-3);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg);
+    transform-origin: top left;
+    animation: pop-in var(--dur-base) var(--ease-out);
+    overflow: hidden;
+  }
+
+  .tier-option {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    width: 100%;
+    /* Left padding compensates for the 2px indicator so text does not shift
+       when an option becomes selected. */
+    padding: 0.5rem 0.75rem 0.5rem calc(0.75rem - 2px);
+    text-align: left;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
+  }
+  .tier-option:hover {
+    background: var(--fill-hover);
+  }
+  .tier-option[aria-selected='true'] {
+    background: var(--accent-wash);
+    border-left-color: var(--accent);
+  }
+
+  /* ------------------------------------------------------------- messages -- */
+
+  .msg {
+    animation: msg-in var(--dur-slow) var(--ease-out) backwards;
+  }
+
+  .bubble-user {
+    max-width: 85%;
+    padding: 0.7rem 1rem;
+    border-radius: var(--radius-xl);
+    border-bottom-right-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-xs);
+    white-space: pre-wrap;
+    line-height: 1.6;
+  }
+
+  .thinking-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.6rem 0.3rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid var(--border-subtle);
+    background: var(--fill-subtle);
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+  .thinking-toggle:hover {
+    background: var(--fill-hover);
+    border-color: var(--border-default);
+    color: var(--text-primary);
+  }
+  .thinking-toggle .chevron {
+    transition: transform var(--dur-base) var(--ease-out);
+  }
+  .thinking-toggle[aria-expanded='true'] .chevron {
+    transform: rotate(90deg);
+  }
+
+  .thinking-body {
+    margin-top: 0.5rem;
+    padding: 0.75rem 0.9rem;
+    border-left: 2px solid var(--accent);
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    background: var(--fill-subtle);
+    color: var(--text-secondary);
+    font-size: 13.5px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    animation: reveal var(--dur-base) var(--ease-out);
+  }
+
+  /* ------------------------------------------------------------- composer -- */
+
+  .composer {
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-2xl);
+    background: var(--surface-2);
+    box-shadow: var(--shadow-sm);
+    transition:
+      border-color var(--dur-base) var(--ease-out),
+      box-shadow var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out);
+  }
+  .composer:hover {
+    border-color: var(--border-strong);
+  }
+  .composer:focus-within {
+    border-color: var(--accent);
+    box-shadow:
+      var(--shadow-md),
+      0 0 0 3px var(--accent-ring);
+  }
+  .composer textarea {
+    display: block;
+    width: 100%;
+    resize: none;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-size: 15px;
+    line-height: 1.6;
+    padding: 0.9rem 1.05rem 0.25rem;
+  }
+  .composer textarea::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  /* Content scrolls under a fade instead of stopping at a hard edge. */
+  .composer-scrim {
+    background: linear-gradient(to bottom, var(--scrim), var(--scrim-solid) 55%);
+  }
+
+  /* ---------------------------------------------------------------- misc -- */
+
+  .divider {
+    height: 1px;
+    background: var(--border-subtle);
+  }
+
+  .kbd {
+    display: inline-block;
+    padding: 0.1rem 0.35rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-default);
+    background: var(--fill-subtle);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    line-height: 1.5;
+  }
+
+  /* ---------------------------------------------------------- streaming -- */
+
+  /* Waiting indicator. On the High tier this is the only thing on screen for
+     ~10 s while the model loads and reasons, so it has to look alive. */
+  .typing-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.22rem;
+  }
+  .typing-dots i {
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background: var(--accent);
+    animation: pulse-dot 1.25s var(--ease-out) infinite;
+  }
+  .typing-dots i:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+  .typing-dots i:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+
+  /* Block cursor trailing the streamed text. */
+  .caret {
+    display: inline-block;
+    width: 2px;
+    height: 1.05em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background: var(--accent);
+    animation: blink 1.05s steps(2, start) infinite;
+  }
+
+  /* Inline advisory — Ollama down, generation failed, model not pulled. */
+  .notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.65rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-default);
+    background: var(--fill-subtle);
+    animation: reveal var(--dur-base) var(--ease-out);
+  }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--fill-hover);
+    border-color: var(--border-strong);
+  }
+  .btn-secondary:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The caret and the pulsing dots are decoration; honour a stated preference
+   for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .caret,
+  .typing-dots i {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------- prose -- */
+
+.prose-arthur {
+  line-height: 1.72;
+  font-size: 15px;
+}
+.prose-arthur p {
+  margin: 0 0 1.05rem;
+}
+.prose-arthur p:last-child {
+  margin-bottom: 0;
+}
+.prose-arthur strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.prose-arthur ul,
+.prose-arthur ol {
+  margin: 0 0 1.05rem;
+  padding-left: 1.35rem;
+}
+.prose-arthur ul {
+  list-style: disc;
+}
+.prose-arthur ol {
+  list-style: decimal;
+}
+.prose-arthur li {
+  margin: 0.3rem 0;
+  padding-left: 0.15rem;
+}
+.prose-arthur li::marker {
+  color: var(--text-tertiary);
+}
+.prose-arthur code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--fill-subtle);
+  border: 1px solid var(--border-subtle);
+  padding: 0.1em 0.36em;
+  border-radius: var(--radius-sm);
+}
+
+/* Headings. Models reach for h1 on trivial answers, so the top levels are
+   deliberately restrained rather than display-sized. */
+.prose-arthur h1,
+.prose-arthur h2,
+.prose-arthur h3,
+.prose-arthur h4 {
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary);
+  margin: 1.6rem 0 0.7rem;
+}
+.prose-arthur h1 { font-size: 1.3em; }
+.prose-arthur h2 { font-size: 1.18em; }
+.prose-arthur h3 { font-size: 1.06em; }
+.prose-arthur h4 { font-size: 1em; }
+.prose-arthur > :first-child { margin-top: 0; }
+
+.prose-arthur em { font-style: italic; }
+.prose-arthur del { opacity: 0.65; text-decoration: line-through; }
+
+.prose-arthur a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-arthur a:hover { text-decoration-thickness: 2px; }
+
+.prose-arthur blockquote {
+  margin: 0 0 1.05rem;
+  padding: 0.15rem 0 0.15rem 0.9rem;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.prose-arthur hr {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* GFM task lists. */
+.prose-arthur li input[type='checkbox'] {
+  margin-right: 0.45rem;
+  accent-color: var(--accent);
+}
+.prose-arthur li:has(input[type='checkbox']) { list-style: none; margin-left: -1.1rem; }
+
+/* Tables scroll inside their own box so a wide one never widens the message. */
+.table-scroll {
+  margin: 0 0 1.05rem;
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.prose-arthur table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13.5px;
+}
+.prose-arthur th,
+.prose-arthur td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.prose-arthur th {
+  background: var(--fill-subtle);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.prose-arthur tr:last-child td { border-bottom: 0; }
+
+/* ------------------------------------------------------- code blocks -- */
+
+.codeblock {
+  margin: 0 0 1.15rem;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+.codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 0.5rem 0.4rem 0.85rem;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--code-head-bg);
+}
+
+.codeblock-lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+}
+
+.codeblock-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.codeblock-copy:hover {
+  background: var(--fill-hover);
+  color: var(--text-primary);
+}
+
+.codeblock pre {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+}
+/* Reset the inline-code chrome — inside a block it would draw a box per line. */
+.codeblock pre code {
+  display: block;
+  background: none;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 12.75px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  white-space: pre;
+}
+
+/* --------------------------------------------------- syntax colours -- */
+
+/* Written against the app's own tokens rather than importing a highlight.js
+   theme, so code matches the warm palette and follows the theme toggle. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--syn-muted);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-formula {
+  color: var(--syn-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: var(--syn-string);
+}
+.hljs-number,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-type,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--syn-number);
+}
+.hljs-title,
+.hljs-section,
+.hljs-title.class_,
+.hljs-title.function_ {
+  color: var(--syn-title);
+}
+.hljs-attr,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-built_in,
+.hljs-meta {
+  color: var(--syn-attr);
+}
+.hljs-deletion {
+  color: var(--syn-deletion);
+}
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
