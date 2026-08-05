@@ -50,10 +50,13 @@ export class UnsupportedFileError extends Error {
   }
 }
 
-/** A file whose bytes are not text at all. */
+/**
+ * A file of a supported type that could not be read anyway — a binary wearing a
+ * `.txt` extension, a corrupt or encrypted PDF, a scan with no text layer.
+ */
 export class UnreadableFileError extends Error {
-  constructor(message: string) {
-    super(message)
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
     this.name = 'UnreadableFileError'
   }
 }

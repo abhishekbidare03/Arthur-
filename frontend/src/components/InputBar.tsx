@@ -23,11 +23,12 @@ const MAX_HEIGHT_PX = 208
 /**
  * Extensions offered in the file picker.
  *
- * Mirrors the backend's text extractor. The picker filter is a convenience, not
- * the check — the backend refuses anything it cannot read, and that refusal is
- * what the user actually sees for a PDF.
+ * Mirrors the backend's extractor registry. The picker filter is a convenience,
+ * not the check — the backend refuses anything it cannot read, and that refusal
+ * is what the user actually sees for an unsupported format.
  */
 const ACCEPT = [
+  '.pdf', '.pptx',
   '.txt', '.md', '.markdown', '.rst', '.log',
   '.json', '.jsonl', '.csv', '.tsv', '.yaml', '.yml', '.toml', '.ini', '.xml',
   '.html', '.htm', '.css', '.scss', '.less', '.svg',
@@ -135,8 +136,8 @@ export default function InputBar({
               className="btn-icon"
               onClick={pickFiles}
               disabled={!onAttach || streaming}
-              title="Attach a text file"
-              aria-label="Attach a text file"
+              title="Attach a file — PDF, PowerPoint, text or source"
+              aria-label="Attach a file"
             >
               <PaperclipIcon className="h-[17px] w-[17px]" />
             </button>

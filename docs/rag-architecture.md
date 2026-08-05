@@ -44,9 +44,23 @@ same PDF twice, ingest it once.
 
 | Phase | Extractors |
 |---|---|
-| 4 | `text.ts` — `.txt` `.md` `.py` `.js` `.ts` `.json` `.csv` |
-| 8 | `pdf.ts` (`pdfjs-dist`) · `docx.ts` (`mammoth`) · `xlsx.ts` (`xlsx`) · `pptx.ts` (`officeparser`) |
+| 4 | `text.ts` — ~60 text and source extensions |
+| 4 *(pulled forward)* | `pdf.ts` (`pdfjs-dist`) · `pptx.ts` (`fflate`) |
+| 8 | `docx.ts` (`mammoth`) · `xlsx.ts` (`xlsx`) |
 | 10 | OCR (`tesseract.js`) · HTML (`cheerio`) · EPUB |
+
+> **PDF and PPTX arrived in Phase 4, not 8** (2026-08-05), on request. The seam held: both
+> registered behind `Extractor` and nothing above the extraction layer changed. They are
+> *injected* rather than retrieved, so a large PDF is still truncated to the token budget with a
+> visible warning — a 16-page paper measured at ~22,500 tokens against an 8192 window, of which
+> ~19% fits. Retrieval in Phase 8 is what makes large documents genuinely work; this makes them
+> attachable and honest about what was read.
+>
+> **`pptx.ts` uses `fflate`, not `officeparser` as specified above.** `officeparser` pulls in
+> `tesseract.js` — an entire OCR engine, which is Phase 10 work — and flattens a deck to a single
+> string, discarding the slide boundaries this document's citation design depends on. A `.pptx`
+> is a ZIP of XML, so unzipping it and scanning `<a:t>` runs gives per-slide text with the slide
+> numbers intact, for one tiny pure-JS dependency.
 
 Phase 4 *injects* this output; Phase 8 *chunks* the same output. The interface is fixed now so
 the code is written once. Page numbers are captured from the start because citations need them.

@@ -38,8 +38,13 @@ export const DOCUMENTS_DIR = join(dirname(DB_PATH), 'documents')
  * The real limit is the per-tier token budget in `buildContext`, which truncates
  * with a visible warning. This exists only to stop something absurd being read
  * into memory.
+ *
+ * 25 MB rather than something tighter because a PDF's size says almost nothing
+ * about its text: a 7 MB scanned-figure paper measured here holds ~22k tokens,
+ * while a 20 kB text PDF holds ~3.7k. Rejecting on bytes would refuse documents
+ * that fit comfortably.
  */
-export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 /**
  * The tray app's server. We *connect* to it and never spawn our own — a second

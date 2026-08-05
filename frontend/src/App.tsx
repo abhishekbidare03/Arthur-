@@ -483,7 +483,7 @@ export default function App() {
           <div className="drop-overlay">
             <div className="drop-card">
               <PaperclipIcon className="h-5 w-5" />
-              <span>Drop a text file to attach it</span>
+              <span>Drop a file to attach it</span>
             </div>
           </div>
         )}

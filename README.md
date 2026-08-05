@@ -27,17 +27,27 @@ Text files can be attached by picker or drag-and-drop and asked about.
 
 ## Attachments
 
-Attach a `.md`, `.py`, `.csv` — around sixty text and source extensions — by paperclip or by
-dropping it anywhere on the chat column. The chip shows its **token** cost rather than its byte
-size, because tokens are what decide whether it fits.
+Attach **PDFs**, **PowerPoint decks**, or any of ~60 text and source formats — by paperclip or
+by dropping onto the chat column. The chip shows its **token** cost rather than its byte size,
+because tokens are what decide whether it fits.
 
-Context is 8192 tokens, so attachments are capped at 60% of the working budget and truncated
-rather than silently dropped; both the model and the message are told what was cut. Files stay
+| Format | Read as |
+|---|---|
+| `.pdf` | Per-page text via `pdfjs-dist`, fonts resolved locally — no CDN, no network |
+| `.pptx` | Per-slide text with speaker notes, by reading the file's own XML |
+| ~60 text/source types | Directly, with binary files refused rather than mangled |
+
+Context is 8192 tokens, so attachments take at most 60% of the working budget and are truncated
+rather than silently dropped — both the model and the message are told what was cut. Files stay
 available for follow-up questions without re-attaching.
 
-PDFs and Office documents are **deliberately refused** with a message saying so. A 10-page PDF
-is ~5,000 tokens — pasting one into an 8192-token window cannot work, so documents wait for
-retrieval in Phase 8 rather than shipping something that half-works.
+**Large PDFs are still truncated.** A 16-page paper measured here holds ~22,500 tokens against
+an 8192-token window; roughly a fifth of it fits. Retrieval in Phase 8 is what makes large
+documents genuinely work. Until then this is honest rather than complete.
+
+Scanned PDFs with no text layer, and image-only decks, are refused by name rather than attached
+empty — OCR arrives in Phase 10. `.docx` and `.xlsx` name their phase; legacy `.doc`/`.ppt`/`.xls`
+say to re-save instead.
 
 ## Effort tiers
 
@@ -55,7 +65,7 @@ separate collapsible panel.
 
 ## Stack
 
-React 19 · TypeScript · Vite 7 · Tailwind v4 · Express 5 · Ollama
+React 19 · TypeScript · Vite 7 · Tailwind v4 · Express 5 · Ollama · SQLite · pdfjs-dist
 
 No Rust, no MSVC, no Python — every dependency installs from npm with prebuilt binaries.
 
@@ -105,8 +115,14 @@ Flash attention is a prerequisite, not an optional extra.
 ## Tests
 
 ```bash
+cd backend  && npm test
 cd frontend && npm test
 ```
+
+`backend/extractors.test.mts` builds a real two-page PDF and a real `.pptx` in memory — no
+committed fixtures — and checks page and slide numbers survive, speaker notes are labelled, and
+each refusal is specific (a corrupt PDF, a text-free scan, and a legacy `.ppt` all say different
+things).
 
 Two jsdom tests, both asserting against the rendered DOM:
 
