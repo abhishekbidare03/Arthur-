@@ -1,7 +1,8 @@
-import { memo, type ReactNode } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import CodeBlock from './CodeBlock'
+import { repairFences } from '../repairFences'
 
 interface MarkdownProps {
   content: string
@@ -44,6 +45,10 @@ function extractCode(node: ReactNode): { code: string; language?: string } {
 }
 
 function MarkdownImpl({ content, streaming = false }: MarkdownProps) {
+  // Small models routinely open a fence inside a list item and then write the
+  // body at column 0, which CommonMark renders as wreckage. See repairFences.
+  const source = useMemo(() => repairFences(content), [content])
+
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -52,6 +57,10 @@ function MarkdownImpl({ content, streaming = false }: MarkdownProps) {
         // language tag and avoids the inline-vs-block ambiguity of `code`.
         pre({ children }) {
           const { code, language } = extractCode(children)
+          // A block with nothing in it is noise — a bare header and an empty
+          // box. While streaming it just means the body has not arrived yet, so
+          // the block is kept to avoid it popping in and out.
+          if (!streaming && code.trim().length === 0) return null
           return <CodeBlock code={code} language={language} streaming={streaming} />
         },
 
@@ -79,7 +88,7 @@ function MarkdownImpl({ content, streaming = false }: MarkdownProps) {
         },
       }}
     >
-      {content}
+      {source}
     </ReactMarkdown>
   )
 }
