@@ -63,7 +63,7 @@ export async function* sendMessage(
   signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const { model, numCtx, temperature, numPredict } = tierConfig(input.tier)
-  const context = buildContext({ messages: input.messages, tier: input.tier })
+  const context = await buildContext({ messages: input.messages, tier: input.tier })
 
   // Reported before the request goes out, so a truncated or dropped file is
   // visible while the answer streams rather than only after it finishes.

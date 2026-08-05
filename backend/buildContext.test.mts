@@ -31,7 +31,7 @@ const conversation: HistoryMessage[] = [
   { role: 'user', content: 'tell me what is this', attachments: [docket] },
 ]
 
-const result = buildContext({ messages: conversation, tier: 'low' })
+const result = await buildContext({ messages: conversation, tier: 'low' })
 const newestTurn = result.messages.at(-1)!
 const olderTurns = result.messages.slice(0, -1)
 
@@ -62,7 +62,7 @@ const followUp: HistoryMessage[] = [
   { role: 'user', content: 'and when exactly?' }, // no new attachment
 ]
 
-const followUpResult = buildContext({ messages: followUp, tier: 'low' })
+const followUpResult = await buildContext({ messages: followUp, tier: 'low' })
 check(
   followUpResult.messages.some((m) => m.content.includes('Thursday 03:00 UTC')),
   'a follow-up turn lost access to a file attached two turns ago — it should still be in history',
@@ -74,14 +74,14 @@ check(
 
 /* -- A single turn with no attachments at all --------------------------------- */
 
-const plain = buildContext({ messages: [{ role: 'user', content: 'hi' }], tier: 'low' })
+const plain = await buildContext({ messages: [{ role: 'user', content: 'hi' }], tier: 'low' })
 check(plain.messages.length === 1 && plain.messages[0]?.content === 'hi', 'a plain message without attachments was altered')
 check(plain.attachments.length === 0, 'a context event fired with no attachments present')
 
 /* -- An oversized attachment on the newest turn is truncated, never dropped --- */
 
 const huge = { id: 'doc-huge', filename: 'huge.txt', text: 'x'.repeat(200_000) }
-const truncated = buildContext({ messages: [{ role: 'user', content: 'summarise this', attachments: [huge] }], tier: 'low' })
+const truncated = await buildContext({ messages: [{ role: 'user', content: 'summarise this', attachments: [huge] }], tier: 'low' })
 check(
   truncated.messages.length === 1 && truncated.messages[0]?.content.includes('summarise this'),
   'the newest turn was dropped entirely rather than having its file truncated',

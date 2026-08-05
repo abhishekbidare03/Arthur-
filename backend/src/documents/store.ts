@@ -17,10 +17,15 @@ import { join } from 'node:path'
 import { DOCUMENTS_DIR } from '../config.ts'
 import { findExtractedByHash, getDocument, insertDocument, type DocumentRow } from '../db/documents.ts'
 import { extract } from './extractors/index.ts'
+import type { ExtractedPage } from './extractors/types.ts'
 
 export interface StoredDocument {
   row: DocumentRow
   text: string
+  /** Per-page text, for `rag/ingest.ts` to chunk without re-extracting the
+   *  file — extraction (especially PDF parsing) is not cheap enough to pay
+   *  twice per upload. */
+  pages: ExtractedPage[]
   /** True when an identical file had already been ingested. */
   deduped: boolean
 }
@@ -55,7 +60,7 @@ export async function storeUpload(input: {
       const cached = existing.extractedTextPath
         ? readFileSync(existing.extractedTextPath, 'utf8')
         : extracted.text
-      return { row: existing, text: cached, deduped: true }
+      return { row: existing, text: cached, pages: extracted.pages, deduped: true }
     } catch {
       // The cache file is gone — fall through and re-ingest under a new row.
     }
@@ -81,7 +86,7 @@ export async function storeUpload(input: {
     conversationId: input.conversationId,
   })
 
-  return { row, text: extracted.text, deduped: false }
+  return { row, text: extracted.text, pages: extracted.pages, deduped: false }
 }
 
 /** Reads a stored document's extracted text back for context assembly. */

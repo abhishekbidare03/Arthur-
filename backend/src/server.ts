@@ -11,6 +11,8 @@ import { closeDb } from './db/index.ts'
 import { attachmentsForConversation, claimDocument, getDocument, linkMessageDocument } from './db/documents.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
 import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
+import { ingestDocument } from './rag/ingest.ts'
+import { warmEmbeddings } from './rag/embed.ts'
 import {
   createConversation,
   deleteConversation,
@@ -145,18 +147,37 @@ app.post(
         : undefined
 
     try {
-      const { row, text, deduped } = await storeUpload({
+      const { row, text, pages, deduped } = await storeUpload({
         filename,
         bytes,
         mime: req.get('Content-Type') ?? undefined,
         conversationId,
       })
 
+      // Chunk and embed now, not lazily on first retrieval — the very next
+      // request after this one can be the message that attaches this file,
+      // and retrieval needs the index to already exist by then. Every upload
+      // is indexed, not just ones that turn out too large to inject whole:
+      // one code path, and the cost for a small file that will never need
+      // retrieval is a few chunks' worth of CPU, not worth branching around.
+      //
+      // Failure here must not fail the upload — `ingestDocument` already
+      // records `status: 'failed'` and `buildContext` falls back to
+      // truncation for anything not indexed, so this is a real degradation
+      // path, not a crash.
+      let status = row.status
+      try {
+        await ingestDocument(row, pages)
+        status = 'indexed'
+      } catch (indexError) {
+        console.error('[documents] indexing failed, falling back to truncation:', indexError)
+      }
+
       res.status(201).json({
         id: row.id,
         filename: row.filename,
         byteSize: row.byteSize,
-        status: row.status,
+        status,
         // Shown on the chip so the cost of attaching is visible before sending,
         // not discovered as a truncation warning afterwards.
         estimatedTokens: Math.ceil(text.length / 4),
@@ -253,7 +274,12 @@ app.post('/api/chat', async (req, res) => {
   const history = priorRows.map((m) => {
     const files = priorAttachments.get(m.id)
     const attachments = files
-      ?.map((f) => ({ id: f.id, filename: f.filename, text: priorTexts.get(f.id) ?? '' }))
+      ?.map((f) => ({
+        id: f.id,
+        filename: f.filename,
+        text: priorTexts.get(f.id) ?? '',
+        indexed: f.status === 'indexed',
+      }))
       .filter((f) => f.text.length > 0)
     return { role: m.role, content: m.content, ...(attachments?.length ? { attachments } : {}) }
   })
@@ -274,6 +300,11 @@ app.post('/api/chat', async (req, res) => {
       id: document!.id,
       filename: document!.filename,
       text: readDocumentText(document!),
+      // Re-read fresh rather than trusting the upload response: ingestion can
+      // still be running for a file attached and sent in quick succession,
+      // and `buildContext` needs to know the *current* state to decide
+      // whether retrieval is actually available.
+      indexed: getDocument(document!.id)?.status === 'indexed',
     }))
     .filter((a) => a.text.length > 0)
 
@@ -394,6 +425,9 @@ app.post('/api/chat', async (req, res) => {
 
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`Arthur backend  →  http://127.0.0.1:${PORT}`)
+  // Loads the embedding model in the background so the first upload or the
+  // first retrieval isn't the request that pays the cold-start cost.
+  warmEmbeddings()
 })
 
 // Checkpoint the WAL on the way out so `arthur.db` is self-contained for backup.

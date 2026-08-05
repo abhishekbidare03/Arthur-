@@ -1,7 +1,9 @@
 # Arthur — RAG Architecture
 
-Decided 2026-08-05. **Not implemented yet** — this document exists so Phases 1–4 are built
-along seams that make RAG (Phases 8–10) additive rather than a rewrite.
+Decided 2026-08-05. **Core retrieval implemented 2026-08-05** — see the amendment after seam 5
+and the Phase 8 section of `phases.md` for what actually shipped versus what's still open. This
+document was originally written before any of it existed, specifically so Phases 1–4 would be
+built along seams that made RAG (Phases 8–10) additive rather than a rewrite; it held.
 
 ## Why this matters now
 
@@ -92,6 +94,19 @@ Hybrid materially outperforms pure vector search on exact names, IDs and rare te
 
 Backup story is correspondingly simple: `arthur.db` + `data/documents/` is the entire state.
 
+> **Implemented (2026-08-05).** `backend/src/db/vectors.ts`. One wrinkle the design above didn't
+> anticipate: `vec0` tables require an *integer* rowid, but `chunks.id` is a text UUID (matching
+> every other table's id scheme in this schema). Rather than add a second mapping table, both
+> `chunk_vectors` and `chunks_fts` key off SQLite's own **implicit** rowid on `chunks` — every
+> ordinary table has one automatically unless declared `WITHOUT ROWID`, even with a non-integer
+> declared primary key, so `chunks.rowid` (never exposed as an id anywhere else) is exactly the
+> integer needed and there is nothing extra to keep in sync. `chunks_fts` uses FTS5's
+> `content=''` (contentless) mode rather than external-content mode tied to `chunks`, because
+> external-content mode requires the content table's rowid to be a *real* `INTEGER PRIMARY KEY`
+> alias, which a `TEXT PRIMARY KEY` table's implicit rowid is not. The cost is storing chunk text
+> twice (once in `chunks`, once in `chunks_fts`) — a few KB per document, irrelevant next to a
+> 130 MB model file.
+
 ### 5. Embeddings on CPU via `transformers.js` — **not** Ollama
 
 **The most important hardware decision in this document.**
@@ -108,6 +123,14 @@ via ONNX.
 - Query embedding is one short string — milliseconds on CPU
 
 Model files live in `E:\Arthur\models\embeddings\` (gitignored).
+
+> **Implemented as designed (2026-08-05).** `backend/src/rag/embed.ts`. Cold start (first-ever
+> download) measured at ~14 s; every load after that reads from `E:\Arthur\models\embeddings\`
+> and takes ~300 ms. A batch embed call is ~15–20 ms regardless of batch size in the tested range.
+> Confirmed zero GPU involvement — this runs purely on CPU via ONNX, and nothing about it touches
+> Ollama or the 4 GB VRAM budget. `bge`'s query-side instruction prefix
+> (`"Represent this sentence for searching relevant passages: "`) is applied to queries only, not
+> to indexed chunks, per how the model was trained.
 
 ---
 
@@ -172,6 +195,32 @@ strength matters less for document questions. The **Low** tier (`qwen2.5:1.5b`, 
 95 tok/s) may well be the *best* RAG tier: fast, fully GPU-resident, and it does not burn
 1,000 tokens thinking before answering. The High tier's reasoning is better spent on synthesis
 than on lookup.
+
+> **Implemented (2026-08-05), scoped to the newest turn.** `backend/src/rag/chunk.ts`,
+> `retrieve.ts`, and `context/buildContext.ts`. What's real:
+>
+> - Chunking splits on paragraph boundaries (falling back to line boundaries for a page with
+>   none) and **never crosses a page**, so every chunk has exactly one honest page citation.
+>   A paragraph longer than one chunk's target is itself split, so a wall-of-text page can't
+>   produce one unbounded chunk.
+> - Retrieval is hybrid as designed: `sqlite-vec` KNN + FTS5 BM25, both scoped to an explicit
+>   document-id set (never the whole database — a conversation's other files must not leak into
+>   an answer, the same guarantee the Phase 4 per-turn-attachment fix makes for injected text),
+>   fused by reciprocal rank fusion (`1/(60 + rank + 1)` per list, summed).
+> - Budget capping is real: `buildContext` passes whatever token budget the newest turn's
+>   attachment share has left, and `retrieveChunks` stops adding chunks once the next one would
+>   exceed it — verified in `backend/rag.test.mts` with a deliberately tiny budget.
+> - **What's not (yet) covered:** retrieval only kicks in for the *newest* turn's own attachments
+>   — the one case the reported bug and the "large PDF truncated" limitation both concerned.
+>   Older history turns still use the Phase 4 whole-turn-fits-or-drops rule; making them
+>   retrieval-aware too is additive, not deferred for architectural reasons, just time. The
+>   `message_sources` table (inline, clickable UI citations) is still empty — the model receives
+>   and can quote page numbers in its answer text, but there's no dedicated UI for it yet.
+> - **Verified live**, not just in a unit test: a 49,633-character (~12,400-token) document with
+>   a fact placed at roughly the 60% mark, against the `low` tier's ~4,200-token attachment
+>   budget, correctly retrieved and answered from the buried fact (`state: "retrieved"`,
+>   10 chunks) — something the old blind truncation (first ~16,700 characters, well short of
+>   where the fact lived) structurally could not do.
 
 ---
 

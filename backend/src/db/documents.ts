@@ -81,6 +81,8 @@ const stmts = {
     WHERE m.conversation_id = ?
     ORDER BY d.created_at
   `),
+
+  setStatus: db.prepare(`UPDATE documents SET status = @status WHERE id = @id`),
 }
 
 export interface AttachmentSummary {
@@ -136,6 +138,12 @@ export function findExtractedByHash(sha256: string): DocumentRow | undefined {
 
 export function claimDocument(id: string, conversationId: string): void {
   stmts.claim.run({ id, conversationId })
+}
+
+/** Drives the ingestion pipeline's visible state — `extracted` → `indexed` on
+ *  success, `failed` if chunking or embedding blows up partway. */
+export function setDocumentStatus(id: string, status: DocumentRow['status']): void {
+  stmts.setStatus.run({ id, status })
 }
 
 export function linkMessageDocument(messageId: string, documentId: string): void {

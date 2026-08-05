@@ -7,7 +7,8 @@
  * |---|---|
  * | 2 | system prompt + budget-trimmed recent history |
  * | 4 | ...plus attachment text, injected with a `<file>` delimiter |
- * | 8 | ...attachments replaced by top-k retrieved chunks + citations |
+ * | 8 | ...a file too large to inject whole falls back to top-k retrieved
+ *     chunks + page citations, instead of a blind character-count truncation |
  *
  * `phases.md` lists this file under Phase 4, but Phase 2 has to assemble
  * `{ system, messages }` regardless. Writing it here in its final shape is
@@ -17,17 +18,23 @@
 
 import { estimateTokens, systemPrompt } from '../prompt.ts'
 import { tierConfig, type Tier } from '../tiers.ts'
+import { retrieveChunks } from '../rag/retrieve.ts'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
 }
 
-/** A document's extracted text, ready to inject. Phase 8 replaces this with chunks. */
+/** A document's extracted text, ready to inject if it fits whole. */
 export interface Attachment {
   id: string
   filename: string
   text: string
+  /** True once `rag/ingest.ts` has chunked and embedded this document — gates
+   *  whether a too-large file can fall back to retrieval instead of a blind
+   *  truncation. Absent (or false) for a document still indexing, or one
+   *  whose indexing failed; either way, truncation is the honest fallback. */
+  indexed?: boolean
 }
 
 /**
@@ -56,10 +63,17 @@ export interface BuildContextInput {
 export interface AttachmentOutcome {
   id: string
   filename: string
-  /** `full` and `truncated` reached the model; `dropped` did not. */
-  state: 'full' | 'truncated' | 'dropped'
+  /** `full`, `truncated` and `retrieved` all reached the model in some form;
+   *  `dropped` did not. `retrieved` means the file was too large to inject
+   *  whole and top-k chunks were sent instead — genuinely different from
+   *  `truncated`, which sends a prefix and nothing past it. */
+  state: 'full' | 'truncated' | 'retrieved' | 'dropped'
   keptChars: number
   totalChars: number
+  /** Set only for `retrieved` — how many chunks were selected, for the UI's
+   *  "5 relevant sections used" phrasing rather than a character count that
+   *  means nothing once the file is no longer contiguous. */
+  chunksUsed?: number
 }
 
 export interface BuiltContext {
@@ -114,6 +128,20 @@ function wrap(filename: string, text: string, note?: string): string {
   return note ? `${open}\n${text}\n${note}\n</file>` : `${open}\n${text}\n</file>`
 }
 
+/** Wraps retrieved chunks with a page citation per chunk, so the model can
+ *  say "on page 4" instead of describing an unlabeled fragment — and so a
+ *  reader can go check. Explicitly labelled as excerpts: this is a different
+ *  shape from the whole-file `wrap()` above, and claiming otherwise would let
+ *  the model imply it read the whole document when it saw five chunks of it. */
+function wrapRetrieved(filename: string, chunks: { text: string; pageNo: number | null }[]): string {
+  const open = `<file name="${filename.replace(/"/g, '&quot;')}" excerpts="${chunks.length}">`
+  const body = chunks
+    .map((c) => (c.pageNo != null ? `[page ${c.pageNo}]\n${c.text}` : c.text))
+    .join('\n\n---\n\n')
+  const note = `[... showing the ${chunks.length} most relevant excerpt${chunks.length === 1 ? '' : 's'} of this file, not the whole document ...]`
+  return `${open}\n${body}\n${note}\n</file>`
+}
+
 /** Cost of a message on its own, files included in full, no truncation. */
 function fullCost(message: HistoryMessage): number {
   const fileTokens = (message.attachments ?? []).reduce(
@@ -140,10 +168,10 @@ function inline(message: HistoryMessage): ChatMessage {
  * not fit is truncated with a visible note rather than the whole turn
  * vanishing.
  */
-function fitNewest(
+async function fitNewest(
   message: HistoryMessage,
   working: number,
-): { content: string; cost: number; outcomes: AttachmentOutcome[] } {
+): Promise<{ content: string; cost: number; outcomes: AttachmentOutcome[] }> {
   const attachments = message.attachments ?? []
   if (attachments.length === 0) {
     return { content: message.content, cost: estimateTokens(message.content) + 4, outcomes: [] }
@@ -171,7 +199,30 @@ function fitNewest(
       continue
     }
 
-    // Doesn't fit whole. Keep a useful prefix if there is room for one.
+    // Doesn't fit whole. An indexed file gets retrieval instead of a blind
+    // prefix — the chunks most relevant to *this question* beat whatever
+    // characters happened to come first in the document, which is what a
+    // truncated PDF's opening abstract or table of contents actually is.
+    if (file.indexed && remaining > WRAP_OVERHEAD) {
+      const chunks = await retrieveChunks([file.id], message.content, remaining - WRAP_OVERHEAD)
+      if (chunks.length > 0) {
+        blocks.push(wrapRetrieved(file.filename, chunks))
+        used += chunks.reduce((sum, c) => sum + c.tokenCount, 0) + WRAP_OVERHEAD
+        outcomes.push({
+          id: file.id,
+          filename: file.filename,
+          state: 'retrieved',
+          keptChars: chunks.reduce((sum, c) => sum + c.text.length, 0),
+          totalChars: file.text.length,
+          chunksUsed: chunks.length,
+        })
+        continue
+      }
+      // Indexed but nothing came back (e.g. the budget is smaller than any
+      // single chunk) — fall through to the truncation path below.
+    }
+
+    // Keep a useful prefix if there is room for one.
     const keptChars = Math.max(0, (remaining - WRAP_OVERHEAD) * 4)
     if (keptChars < MIN_USEFUL_CHARS) {
       outcomes.push({
@@ -203,7 +254,7 @@ function fitNewest(
   return { content, cost: estimateTokens(content) + 4, outcomes }
 }
 
-export function buildContext({ messages, tier }: BuildContextInput): BuiltContext {
+export async function buildContext({ messages, tier }: BuildContextInput): Promise<BuiltContext> {
   const { numCtx } = tierConfig(tier)
   const system = systemPrompt(tier)
 
@@ -218,7 +269,7 @@ export function buildContext({ messages, tier }: BuildContextInput): BuiltContex
   const newest = messages[messages.length - 1]!
   const older = messages.slice(0, -1)
 
-  const { content: newestContent, cost: newestCost, outcomes } = fitNewest(newest, working)
+  const { content: newestContent, cost: newestCost, outcomes } = await fitNewest(newest, working)
 
   /* --------------------------------------------------------------- history -- */
 

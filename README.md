@@ -19,7 +19,8 @@ VRAM**, which drives most of the design decisions in this repo.
 | 5 | Voice in/out | ⬜ Next |
 | 6 | Packaging & launcher | ⬜ |
 | 7 | Polish | 🟡 Markdown + code blocks done early |
-| 8–10 | RAG over documents | ⬜ |
+| 8 | RAG core (chunking, embeddings, hybrid retrieval) | 🟡 Core done, citation UI pending |
+| 9–10 | Collections, advanced formats | ⬜ |
 
 Working chat with real streamed responses across three effort tiers, with durable local
 history in SQLite. Conversations survive restarts; rename and delete from the sidebar.
@@ -47,9 +48,18 @@ answers. Gluing every attachment onto the newest question was the original desig
 produced exactly that mix-up; a file now sits next to the question it actually belongs to, the
 way a real conversation does.
 
-**Large PDFs are still truncated.** A 16-page paper measured here holds ~22,500 tokens against
-an 8192-token window; roughly a fifth of it fits. Retrieval in Phase 8 is what makes large
-documents genuinely work. Until then this is honest rather than complete.
+**Large files are retrieved, not blindly truncated.** A file too large to inject whole is
+chunked (~500 tokens, page-aware) and embedded on CPU (`bge-small-en-v1.5`, never via Ollama —
+zero VRAM contention with the chat model), then searched by a hybrid of vector similarity and
+SQLite FTS5 keyword search, fused by reciprocal rank. The chunks most relevant to *this
+question* are sent instead of whichever characters happened to come first. Verified against a
+real 49,633-character document with a fact placed 60% of the way through, against the smallest
+tier's ~4,200-token attachment budget — the old truncation path (first ~16,700 characters) would
+never have reached it; retrieval did.
+
+This only covers the file(s) attached to the message being answered right now — older
+conversation turns still use the Phase 4 whole-turn-fits-or-drops rule. And there's no
+clickable citation UI yet, though the model does receive and can quote page numbers.
 
 Scanned PDFs with no text layer, and image-only decks, are refused by name rather than attached
 empty — OCR arrives in Phase 10. `.docx` and `.xlsx` name their phase; legacy `.doc`/`.ppt`/`.xls`
@@ -71,7 +81,8 @@ separate collapsible panel.
 
 ## Stack
 
-React 19 · TypeScript · Vite 7 · Tailwind v4 · Express 5 · Ollama · SQLite · pdfjs-dist
+React 19 · TypeScript · Vite 7 · Tailwind v4 · Express 5 · Ollama · SQLite · sqlite-vec ·
+pdfjs-dist · transformers.js (bge-small-en-v1.5, CPU-only embeddings)
 
 No Rust, no MSVC, no Python — every dependency installs from npm with prebuilt binaries.
 
@@ -132,8 +143,16 @@ things).
 
 `backend/buildContext.test.mts` pins the cross-file mix-up bug: attach file A, ask about it,
 attach a different file B, ask "what is this" — asserts B's text lands on the new turn and A's
-does not, that a genuine follow-up about A (no re-attach) still works, and that an oversized
-attachment truncates rather than dropping the whole turn.
+does not, that a genuine follow-up about A (no re-attach) still works, and that an oversized,
+un-indexed attachment truncates rather than dropping the whole turn.
+
+`backend/rag.test.mts` exercises the real retrieval pipeline — real embeddings, real
+`sqlite-vec`, real FTS5, no mocks (only the database file is redirected to a scratch path).
+Builds a three-page fixture with a distinct fact per page, chunks it, indexes it, and checks
+that a query about one page's fact returns that page's chunk and not the others; that keyword
+search finds an exact code; that a tight token budget is never exceeded; and that
+`buildContext` falls back from truncation to retrieval for an oversized *indexed* file while
+still truncating one that isn't.
 
 Two jsdom tests, both asserting against the rendered DOM:
 
