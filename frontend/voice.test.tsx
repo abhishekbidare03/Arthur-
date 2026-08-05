@@ -80,23 +80,6 @@ check(
 let micOpened = false
 let tracksStopped = 0
 
-class FakeMediaRecorder {
-  state: 'inactive' | 'recording' = 'inactive'
-  mimeType = 'audio/webm'
-  ondataavailable: ((e: { data: Blob }) => void) | null = null
-  onstop: (() => void) | null = null
-
-  start() {
-    this.state = 'recording'
-  }
-  stop() {
-    this.state = 'inactive'
-    // A real recorder emits its buffered audio before `onstop`.
-    this.ondataavailable?.({ data: new dom.window.Blob([new Uint8Array(2048)], { type: 'audio/webm' }) })
-    this.onstop?.()
-  }
-}
-
 // The *real* jsdom navigator is kept and `mediaDevices` defined onto it —
 // jsdom has no such property, and React reads `navigator.userAgent` through a
 // getter that rejects anything which is not a genuine Navigator instance, so
@@ -116,39 +99,53 @@ Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
 })
 
-g.MediaRecorder = FakeMediaRecorder
 g.Blob = dom.window.Blob
 g.File = dom.window.File
+// Overridden outright, not defaulted: Node 22 *has* a real `URL.createObjectURL`,
+// and it rejects a jsdom `Blob` — two separate Blob classes are in play here, so
+// it fails with the memorable "must be an instance of Blob. Received an instance
+// of Blob". A real browser has only one Blob, so this is a test artefact; the
+// worklet's blob URL is never fetched here anyway.
+g.URL.createObjectURL = () => 'blob:worklet'
+g.URL.revokeObjectURL = () => {}
 
-// Decoding and resampling are the browser's job; here they only have to be
-// *shaped* right, so the recorder's own logic downstream of them is exercised.
-const fakeAudioBuffer = {
-  duration: 1.5,
-  length: 24_000,
-  sampleRate: 16_000,
-  numberOfChannels: 1,
-  getChannelData: () => new Float32Array(24_000).fill(0.1),
+/**
+ * A stand-in for the Web Audio graph.
+ *
+ * `emitSamples` is the handle the test uses to *play audio into* the recorder:
+ * whatever the worklet would have posted from a real microphone is pushed
+ * through here instead, so the segmenter, the queue and the transcription round
+ * trip all run for real. Only the device is fake.
+ */
+let emitSamples: ((chunk: Float32Array) => void) | undefined
+let contextClosed = false
+
+class FakeAudioWorkletNode {
+  port = { onmessage: null as ((e: { data: Float32Array }) => void) | null }
+  constructor() {
+    emitSamples = (chunk) => this.port.onmessage?.({ data: chunk })
+  }
+  connect() {}
+  disconnect() {}
 }
 
 class FakeAudioContext {
-  async decodeAudioData() {
-    return fakeAudioBuffer
-  }
-  async close() {}
-}
-
-class FakeOfflineAudioContext {
+  sampleRate = 16_000
   destination = {}
-  createBufferSource() {
-    return { buffer: null, connect() {}, start() {} }
+  audioWorklet = { addModule: async () => {} }
+  createMediaStreamSource() {
+    return { connect() {}, disconnect() {} }
   }
-  async startRendering() {
-    return fakeAudioBuffer
+  createGain() {
+    return { gain: { value: 1 }, connect() {}, disconnect() {} }
+  }
+  async close() {
+    contextClosed = true
   }
 }
 
 g.AudioContext = FakeAudioContext
-g.OfflineAudioContext = FakeOfflineAudioContext
+g.AudioWorkletNode = FakeAudioWorkletNode
 
 // No speech synthesis in jsdom — leaving it undefined also asserts something
 // real: SpeakButton must render nothing rather than throwing when the browser
@@ -157,8 +154,10 @@ delete g.speechSynthesis
 
 /* -- Mock backend ----------------------------------------------------------- */
 
-const TRANSCRIPT = 'What is the rotation window'
-let uploadedAudio: Blob | null = null
+// One reply per phrase, in order — so the test can tell live, incremental
+// transcription apart from a single transcript arriving at the end.
+const PHRASES = ['What is the rotation window', 'and who owns it']
+const uploads: Blob[] = []
 let warmed = false
 
 g.fetch = async (input: string, init?: { method?: string; body?: unknown }) => {
@@ -173,8 +172,9 @@ g.fetch = async (input: string, init?: { method?: string; body?: unknown }) => {
     return new Response(null, { status: 202 })
   }
   if (url.endsWith('/api/transcribe')) {
-    uploadedAudio = init?.body as Blob
-    return json({ text: TRANSCRIPT, audioMs: 1500, elapsedMs: 800 })
+    const body = init?.body as Blob
+    uploads.push(body)
+    return json({ text: PHRASES[uploads.length - 1] ?? '', audioMs: 1500, elapsedMs: 400 })
   }
 
   throw new Error(`unexpected fetch: ${url}`)
@@ -192,14 +192,16 @@ await act(async () => {
 })
 
 const micButton = () =>
-  [...document.querySelectorAll('button')].find(
-    (b) => b.getAttribute('aria-label')?.toLowerCase().includes('dictate') || b.getAttribute('aria-label') === 'Stop recording',
+  [...document.querySelectorAll('button')].find((b) =>
+    b.getAttribute('aria-label')?.toLowerCase().includes('dictat'),
   ) as HTMLButtonElement | undefined
+
+const composer = () => document.querySelector('textarea') as HTMLTextAreaElement | null
 
 check(micButton() !== undefined, 'no mic button rendered — voice input is not wired up')
 check(micButton()?.disabled === false, 'the mic button is still disabled')
 
-/* -- Press to record -------------------------------------------------------- */
+/* -- Press to start dictating ------------------------------------------------ */
 
 await act(async () => {
   micButton()!.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
@@ -211,58 +213,92 @@ check(
   'the mic button does not report itself as recording',
 )
 check(
-  document.querySelector('textarea')?.getAttribute('placeholder') === 'Listening…',
-  'the composer does not show that it is listening',
+  composer()?.getAttribute('placeholder')?.startsWith('Listening'),
+  `the composer does not show that it is listening: ${composer()?.getAttribute('placeholder')}`,
+)
+check(warmed, 'the speech model was never warmed — the first phrase would pay the load')
+
+/* -- Speak: text must appear WHILE recording, not only after stopping -------- */
+
+const RATE = 16_000
+const CHUNK = 1024
+const chunksFor = (ms: number) => Math.ceil(ms / ((CHUNK / RATE) * 1000))
+const speech = () => {
+  const out = new Float32Array(CHUNK)
+  for (let i = 0; i < CHUNK; i++) out[i] = Math.sin(i / 6) * 0.14
+  return out
+}
+const silence = () => new Float32Array(CHUNK)
+
+const play = async (make: () => Float32Array, ms: number) => {
+  await act(async () => {
+    for (let i = 0; i < chunksFor(ms); i++) emitSamples!(make())
+    // Let the queued transcription promise resolve.
+    await new Promise((r) => setTimeout(r, 20))
+  })
+}
+
+// One phrase, then a pause long enough to end it.
+await play(speech, 1500)
+check(
+  composer()?.value === '',
+  'text appeared before the speaker had paused — the phrase was cut mid-sentence',
 )
 
-// The recorder discards anything under 350 ms as a mis-click, so this waits
-// past that — the real guard is being exercised, not bypassed.
-await new Promise((r) => setTimeout(r, 420))
+await play(silence, 700)
 
-/* -- Press again to stop and transcribe ------------------------------------- */
+check(uploads.length === 1, `a pause should have sent exactly one phrase, got ${uploads.length}`)
+check(uploads[0]?.type === 'audio/wav', `the backend should receive WAV, got ${uploads[0]?.type}`)
+
+// THE POINT OF THIS FEATURE: the words are on screen while the mic is still open.
+check(
+  composer()?.value === PHRASES[0],
+  `the first phrase did not appear during recording: ${JSON.stringify(composer()?.value)}`,
+)
+check(
+  micButton()?.getAttribute('aria-pressed') === 'true',
+  'recording stopped by itself after the first phrase',
+)
+
+/* -- Keep talking: the second phrase appends to the first -------------------- */
+
+await play(speech, 1500)
+await play(silence, 700)
+
+check(uploads.length === 2, `expected a second phrase to be sent, got ${uploads.length}`)
+check(
+  composer()?.value === `${PHRASES[0]} ${PHRASES[1]}`,
+  `phrases should accumulate in order with a space between them: ${JSON.stringify(composer()?.value)}`,
+)
+
+/* -- Press again to stop ----------------------------------------------------- */
 
 await act(async () => {
   micButton()!.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
-})
-await act(async () => {
-  await new Promise((r) => setTimeout(r, 50))
+  await new Promise((r) => setTimeout(r, 30))
 })
 
-check(warmed, 'the speech model was never warmed — the first transcription pays the load')
-check(uploadedAudio !== null, 'no audio was uploaded for transcription')
-check(
-  (uploadedAudio as Blob | null)?.type === 'audio/wav',
-  `the backend should receive WAV, got ${(uploadedAudio as Blob | null)?.type}`,
-)
 check(tracksStopped > 0, 'the microphone track was never stopped — Chrome keeps the mic indicator on')
-
-const textarea = document.querySelector('textarea') as HTMLTextAreaElement | null
-check(
-  textarea?.value === TRANSCRIPT,
-  `the transcript did not land in the composer: ${JSON.stringify(textarea?.value)}`,
-)
+check(contextClosed, 'the AudioContext was left open after recording finished')
 check(
   micButton()?.getAttribute('aria-pressed') === 'false',
-  'the mic button is still showing as recording after transcription finished',
+  'the mic button is still showing as recording after stopping',
 )
 
-/* -- Transcription is editable, not auto-sent -------------------------------- */
+/* -- The text is left editable, never auto-sent ------------------------------ */
 
+const finalText = composer()?.value ?? ''
 check(
-  document.body.textContent?.includes(TRANSCRIPT) === true,
-  'the transcript is not visible anywhere on screen',
+  finalText === `${PHRASES[0]} ${PHRASES[1]}`,
+  `stopping should leave the dictated text alone: ${JSON.stringify(finalText)}`,
 )
-// If it had been auto-sent, the composer would have been cleared and a user
-// bubble rendered. Neither should have happened.
-check(
-  textarea?.value.length! > 0,
-  'the transcript was sent immediately instead of being left editable',
-)
+check(finalText.length > 0, 'the dictation was sent immediately instead of being left editable')
 
 /* -- Report ------------------------------------------------------------------ */
 
 console.log('\n--- composer after dictation ---------------------------------')
-console.log(`  value: ${JSON.stringify(textarea?.value)}`)
+console.log(`  phrases sent: ${uploads.length}`)
+console.log(`  value: ${JSON.stringify(finalText)}`)
 console.log('---------------------------------------------------------------\n')
 
 if (failures.length > 0) {
@@ -271,5 +307,7 @@ if (failures.length > 0) {
   process.exit(1)
 }
 
-console.log('PASS  mic records, uploads WAV, transcript lands editable in the composer; markdown is spoken as prose')
+console.log(
+  'PASS  words appear while recording, phrase by phrase, in order; mic released on stop; text left editable',
+)
 process.exit(0)

@@ -67,10 +67,18 @@ say to re-save instead.
 
 ## Voice
 
-**Dictate** with the mic button: press to record, press again to stop. The transcript lands in
-the composer **editable** — never sent for you — so a misheard word is a one-word fix rather than
-a re-record. Speech recognition is `whisper-tiny.en` running on CPU through ONNX, ~3.7× realtime
-here, with the model cached on E: beside the others.
+**Dictate** with the mic button and the words appear **as you speak** — each phrase is
+transcribed the moment you pause, so the text keeps pace with you rather than arriving in a lump
+at the end. Press again to stop; the text stays in the composer **editable** and is never sent
+for you, so a misheard word is a one-word fix rather than a re-record. Pressing send while still
+talking finishes the sentence first rather than cutting it off.
+
+Whisper is not a streaming model — it transcribes a finished clip. Splitting on natural pauses is
+what makes it feel live: the pieces are short enough to transcribe quickly *and* whole enough
+that the model still has the context it needs to hear correctly. The obvious alternative,
+re-transcribing everything every second, gets slower exactly as you talk longer; this way the lag
+stays flat however long the recording runs. Speech recognition is `whisper-tiny.en` on CPU
+through ONNX, ~3.7× realtime here, cached on E: beside the other models.
 
 `tiny.en` rather than `base.en` because it measured *better*, not just faster: on a deliberately
 awkward test sentence it got "Kubernetes" right where `base.en` produced "Kibernets", while being
@@ -180,9 +188,13 @@ Two jsdom tests, both asserting against the rendered DOM:
   conversation database and checks they come out as real code blocks.
 - **`attachments.test.tsx`** picks a file in the composer and checks the chip, the document id
   on the request, and the truncation warning.
-- **`voice.test.tsx`** drives the mic button with the browser audio APIs mocked, checking the
-  recorder opens the mic, uploads WAV, releases the device afterwards, and leaves the transcript
-  editable rather than sending it.
+- **`voice.test.tsx`** drives the mic button with the browser audio graph mocked, *playing audio
+  into* the recorder to check that words land in the composer **while recording is still
+  running** — the point of the feature — that phrases accumulate in order, that the mic and
+  audio context are released on stop, and that nothing is auto-sent.
+- **`segmenter.test.mts`** covers the logic that decides when a phrase has ended: a real pause
+  ends one, a gap between words does not (or dictation would fragment into unusable scraps), a
+  long unbroken run is still cut so text keeps appearing, and silence is never sent at all.
 
 `backend/voice.test.mts` builds real WAVs for each case that actually differs — an 18-byte `fmt `
 chunk (what Windows writes, and what a fixed-offset reader decodes as garbage), an unexpected

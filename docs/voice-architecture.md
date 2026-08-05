@@ -125,7 +125,7 @@ stop. whisper.cpp *can* use CUDA; this app should never ask it to.
   `POST /api/documents`'s raw-bytes-plus-header pattern rather than multipart) → text lands in
   the existing `value` state, editable, not auto-submitted. **Shipped as designed**, with the
   transcript *appended* to whatever is already typed rather than replacing it — which also makes
-  a failed transcription non-destructive.
+  a failed transcription non-destructive. **Revised to live dictation** the same day, see below.
 - ~~A new small control on each assistant message bubble → `POST /api/speak`~~ → **no route
   exists.** `SpeakButton.tsx` calls `speechSynthesis` directly; there is no audio to stream and
   no latency to measure, so the question this bullet deferred stopped existing.
@@ -145,6 +145,47 @@ stop. whisper.cpp *can* use CUDA; this app should never ask it to.
 - **TTS is per-message**, not a global "speak replies" setting: an answer worth hearing is
   usually a specific one, and auto-speaking every reply is the kind of default people turn off
   once and never turn back on.
+
+## Live dictation — words appear while you speak (2026-08-06)
+
+The first cut recorded, then transcribed on stop. Requested change: *"as I start talking it should
+write along with me, and then I will click the send button."*
+
+**The problem:** whisper is not a streaming model. It transcribes a finished clip, so there is no
+"partial result" to subscribe to. Live text has to be manufactured by cutting the audio into
+pieces — and *where* you cut is the whole design.
+
+**Rejected: re-transcribe everything, repeatedly.** The obvious approach — every second,
+transcribe all audio captured so far — degrades exactly as the recording grows. At ~3.7× realtime
+a 20-second dictation needs ~5.4 s per refresh by the end, so the text falls further behind the
+longer you talk. Wrong shape entirely.
+
+**Chosen: cut at pauses.** `frontend/src/voice/segmenter.ts` watches the signal level and closes a
+phrase after ~550 ms of quiet. People pause between phrases anyway, so the clips come out both
+short (fast to transcribe) *and* linguistically whole — which matters, because whisper uses
+surrounding context to decide what it heard. Cutting mid-word costs accuracy in a way cutting
+mid-pause does not. Lag stays flat regardless of total length.
+
+Three numbers carry the feel, and all three are tunable in one place:
+
+| Constant | Value | What breaks if it is wrong |
+|---|---|---|
+| `silenceHoldMs` | 550 | Too low and normal gaps between words split every phrase — dictation fragments into scraps whisper cannot read. Too high and text visibly trails the speaker. |
+| `maxSegmentMs` | 9 000 | Bounds the worst case (someone reading a list without breathing). A forced cut lands mid-word and costs accuracy, so it is generous — a backstop, not routine. |
+| `silenceRms` | 0.008 | Higher than the backend's 0.003, because this has to find *pauses against live room noise*, not merely tell speech from digital silence. |
+
+**Capture changed from `MediaRecorder` to raw PCM via `AudioWorklet`.** Not preference — necessity:
+only a *complete* WebM/Opus recording is decodable, so there is no way to transcribe the first
+half of one still running. Pulling PCM directly also lets the `AudioContext` be opened at 16 kHz,
+which deletes the resampling step that existed before.
+
+**Transcriptions are queued, never parallel.** Two phrases in flight can return out of order, and
+a dictated sentence with its clauses swapped is worse than one arriving slightly later.
+
+**Pressing send mid-sentence finishes the sentence.** `submit()` closes the recording and awaits
+the final phrase rather than refusing the click. This is why `InputBar` keeps a `valueRef`
+alongside `value`: those last words arrive *during* the await, so the `value` captured by the
+current render is stale by the time it would be sent.
 
 ## Two things worth knowing before touching this
 

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Attachment } from '../types'
 import { transcribeAudio, warmTranscription } from '../api'
-import { MicrophoneDeniedError, NoMicrophoneError, Recorder } from '../voice/recorder'
+import { LiveRecorder, MicrophoneDeniedError, NoMicrophoneError } from '../voice/recorder'
 import AttachmentChip from './AttachmentChip'
 import { MicIcon, PaperclipIcon, SendIcon, StopIcon } from './icons'
 
@@ -53,12 +53,33 @@ export default function InputBar({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  // Voice input. `idle → recording → transcribing → idle`, with the transcript
-  // landing in the composer *editable* rather than being sent — a wrong word
-  // should be a one-word fix, not a re-record.
-  const recorderRef = useRef<Recorder>(null as unknown as Recorder)
-  if (recorderRef.current === null) recorderRef.current = new Recorder()
-  const [voiceState, setVoiceState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
+  /**
+   * A synchronous mirror of `value`.
+   *
+   * Dictated phrases arrive from a callback, and `submit()` reads the text
+   * *after* awaiting the final one — by which point the `value` closed over by
+   * the current render is stale. Keeping a ref updated in the same breath as
+   * the state gives a value that is always current, without making every
+   * reader depend on when React last rendered.
+   */
+  const valueRef = useRef('')
+
+  /** Sets the composer text and its mirror together. Nothing should write to
+   *  `setValue` directly — that is how the two drift apart. */
+  const setText = (next: string) => {
+    valueRef.current = next
+    setValue(next)
+  }
+
+  // Voice input. Text appears *while* you speak — each phrase is transcribed
+  // as soon as you pause — and stays editable rather than being sent, so a
+  // misheard word is a one-word fix and the send button is still yours to press.
+  const recorderRef = useRef<LiveRecorder>(null as unknown as LiveRecorder)
+  if (recorderRef.current === null) {
+    recorderRef.current = new LiveRecorder((wav) => transcribeAudio(wav))
+  }
+  const [recording, setRecording] = useState(false)
+  const [catchingUp, setCatchingUp] = useState(false)
   const [voiceError, setVoiceError] = useState<string>()
 
   // Drop the mic if the component goes away mid-recording — otherwise Chrome
@@ -83,11 +104,27 @@ export default function InputBar({
     if (!streaming) textareaRef.current?.focus()
   }, [streaming])
 
-  function submit() {
-    const trimmed = value.trim()
-    if (!trimmed || streaming) return
+  /**
+   * Sends the message, finishing any dictation still in progress first.
+   *
+   * Pressing send mid-sentence is a natural way to say "that's it" — so rather
+   * than refusing, this closes the recording and waits for the last phrase to
+   * land. Reading `valueRef` rather than `value` afterwards is the point: those
+   * final words arrive *during* the await, and the `value` captured by this
+   * render would not include them.
+   */
+  async function submit() {
+    if (streaming) return
+
+    if (recording) {
+      setRecording(false)
+      await recorderRef.current.stop()
+    }
+
+    const trimmed = valueRef.current.trim()
+    if (!trimmed) return
     onSend(trimmed)
-    setValue('')
+    setText('')
   }
 
   // Enter sends, Shift+Enter inserts a newline — matching Claude, not the
@@ -108,59 +145,68 @@ export default function InputBar({
 
   // Sending while a file is still being read would silently drop it.
   const uploading = attachments.some((a) => a.uploading)
+  // Recording deliberately does *not* block sending: `submit()` closes the
+  // dictation and waits for the last phrase first, so pressing send mid-sentence
+  // does the obvious thing instead of being refused.
   const canSend = value.trim().length > 0 && !streaming && !uploading
 
   function pickFiles() {
     fileRef.current?.click()
   }
 
+  /** Appends a transcribed phrase to whatever is in the composer, spacing it
+   *  the way a sentence needs rather than jamming it against the last word. */
+  function appendPhrase(phrase: string) {
+    const current = valueRef.current
+    if (!current) {
+      setText(phrase)
+      return
+    }
+    setText(/\s$/.test(current) ? current + phrase : `${current} ${phrase}`)
+  }
+
   /**
-   * Mic button: press to start, press again to stop and transcribe.
+   * Mic button: press to start, press again to stop.
    *
    * Click-to-toggle rather than hold-to-talk — dictating a paragraph with a
    * mouse button held down is miserable, and it makes the feature unusable
    * from a keyboard.
+   *
+   * Text arrives *during* recording, a phrase at a time, so pressing stop is
+   * about ending the recording rather than starting the transcription.
    */
   async function toggleRecording() {
     const recorder = recorderRef.current
     setVoiceError(undefined)
 
-    if (voiceState === 'recording') {
-      setVoiceState('transcribing')
-      try {
-        const recording = await recorder.stop()
-        if (!recording) {
-          // Too short to be speech — a mis-click, not an error worth a message.
-          setVoiceState('idle')
-          return
-        }
-        const text = await transcribeAudio(recording.wav)
-        // Append rather than replace: dictating after typing a few words should
-        // add to them, which is also what makes a failed transcription
-        // non-destructive.
-        setValue((current) => (current.trim() ? `${current.trim()} ${text}` : text))
-        textareaRef.current?.focus()
-      } catch (error) {
-        setVoiceError(error instanceof Error ? error.message : 'That recording could not be transcribed.')
-      } finally {
-        setVoiceState('idle')
-      }
+    if (recording) {
+      setRecording(false)
+      // Resolves once the last phrase has landed, so focus moves to a composer
+      // that already holds the complete text.
+      await recorder.stop()
+      textareaRef.current?.focus()
       return
     }
 
     try {
-      // Starts the model loading while the user is still talking, so the wait
-      // after they stop is transcription only.
+      // Starts the model loading while the user is still talking, so the first
+      // phrase is not the one paying for it.
       warmTranscription()
-      await recorder.start()
-      setVoiceState('recording')
+      await recorder.start({
+        onText: appendPhrase,
+        // A failed phrase is reported but does not stop the recording — the
+        // rest of what is being said still lands.
+        onError: setVoiceError,
+        onPendingChange: setCatchingUp,
+      })
+      setRecording(true)
     } catch (error) {
       if (error instanceof MicrophoneDeniedError || error instanceof NoMicrophoneError) {
         setVoiceError(error.message)
       } else {
         setVoiceError('The microphone could not be opened.')
       }
-      setVoiceState('idle')
+      setRecording(false)
     }
   }
 
@@ -179,17 +225,15 @@ export default function InputBar({
           ref={textareaRef}
           value={value}
           autoFocus={autoFocus}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           rows={1}
           placeholder={
-            voiceState === 'recording'
-              ? 'Listening…'
-              : voiceState === 'transcribing'
-                ? 'Transcribing…'
-                : streaming
-                  ? 'Arthur is replying…'
-                  : 'Message Arthur…'
+            recording
+              ? 'Listening — speak, and it will write along with you…'
+              : streaming
+                ? 'Arthur is replying…'
+                : 'Message Arthur…'
           }
         />
 
@@ -218,18 +262,12 @@ export default function InputBar({
             </button>
             <button
               className="btn-icon"
-              data-recording={voiceState === 'recording' || undefined}
+              data-recording={recording || undefined}
               onClick={toggleRecording}
-              disabled={streaming || voiceState === 'transcribing'}
-              title={
-                voiceState === 'recording'
-                  ? 'Stop recording and transcribe'
-                  : voiceState === 'transcribing'
-                    ? 'Transcribing…'
-                    : 'Dictate a message'
-              }
-              aria-label={voiceState === 'recording' ? 'Stop recording' : 'Dictate a message'}
-              aria-pressed={voiceState === 'recording'}
+              disabled={streaming}
+              title={recording ? 'Stop dictating' : 'Dictate a message'}
+              aria-label={recording ? 'Stop dictating' : 'Dictate a message'}
+              aria-pressed={recording}
             >
               <MicIcon className="h-[17px] w-[17px]" />
             </button>
@@ -266,7 +304,15 @@ export default function InputBar({
         </p>
       )}
 
-      {showHint && !voiceError && (
+      {/* Only while a phrase is still being transcribed after you have stopped
+          talking — during recording the arriving text is its own feedback. */}
+      {catchingUp && !voiceError && (
+        <p className="mt-2 text-center text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
+          Catching up…
+        </p>
+      )}
+
+      {showHint && !voiceError && !catchingUp && (
         <p className="mt-3 text-center text-[11.5px]" style={{ color: 'var(--text-tertiary)' }}>
           <span className="kbd">Enter</span> to send · <span className="kbd">Shift</span>
           <span className="kbd ml-0.5">Enter</span> for a new line
