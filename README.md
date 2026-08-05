@@ -93,10 +93,15 @@ Flash attention is a prerequisite, not an optional extra.
 cd frontend && npm test
 ```
 
-Renders the real `App` in jsdom against a mocked SSE backend and asserts the streamed reply
-reaches the DOM, across a new chat and a follow-up turn. It exists because two separate bugs
-discarded every token on screen while the backend and database stayed perfectly correct —
-verifying `/api/chat` by hand cannot detect that at all.
+Two jsdom tests, both asserting against the rendered DOM:
+
+- **`streaming.test.tsx`** renders the real `App` against a mocked SSE backend and checks the
+  streamed reply reaches the screen, across a new chat and a follow-up turn.
+- **`markdown.test.tsx`** feeds the renderer malformed fences copied verbatim from the
+  conversation database and checks they come out as real code blocks.
+
+Both exist because bugs in this layer are invisible from the backend: `/api/chat` streamed
+correctly and SQLite stored every answer while the UI was showing nothing at all.
 
 ## Documentation
 
