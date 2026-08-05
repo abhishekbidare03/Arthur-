@@ -175,6 +175,9 @@ This repo keeps its reasoning, not just its code:
   work (several do not)
 - **[`docs/rag-architecture.md`](docs/rag-architecture.md)** — the document/RAG design, and the
   five seams built early so it lands as an addition rather than a rewrite
+- **[`docs/voice-architecture.md`](docs/voice-architecture.md)** — the Phase 5 (voice) design:
+  the STT/TTS boundary shape, why whisper.cpp/Piper are spawned per-request rather than run as
+  a service, and what's still an open question
 
 The build plan and the session-by-session work log are kept locally rather than published —
 they record hardware specifics and local paths. Commit messages carry the reasoning behind
