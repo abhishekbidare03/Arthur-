@@ -9,13 +9,12 @@
  */
 
 import type { Tier } from '../tiers.ts'
-import type { Attachment, AttachmentOutcome, ChatMessage } from '../context/buildContext.ts'
+import type { AttachmentOutcome, HistoryMessage } from '../context/buildContext.ts'
 
 export interface SendMessageInput {
-  messages: ChatMessage[]
+  /** Each turn carries its own attachments, if any — see `HistoryMessage`. */
+  messages: HistoryMessage[]
   tier: Tier
-  /** Documents to put in context. Phase 8 replaces these with retrieved chunks. */
-  attachments?: Attachment[]
 }
 
 export interface GenerationStats {

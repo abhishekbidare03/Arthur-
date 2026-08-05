@@ -6,7 +6,7 @@
  * | Phase | Implementation |
  * |---|---|
  * | 2 | system prompt + budget-trimmed recent history |
- * | 4 (now) | ...plus attachment text, injected with a `<file>` delimiter |
+ * | 4 | ...plus attachment text, injected with a `<file>` delimiter |
  * | 8 | ...attachments replaced by top-k retrieved chunks + citations |
  *
  * `phases.md` lists this file under Phase 4, but Phase 2 has to assemble
@@ -30,16 +30,26 @@ export interface Attachment {
   text: string
 }
 
-export interface BuildContextInput {
-  messages: ChatMessage[]
-  tier: Tier
-  /**
-   * Documents attached anywhere in this conversation, newest first.
-   *
-   * Newest first matters: when the budget cannot hold everything, the file the
-   * user is most likely asking about is the one they just attached.
-   */
+/**
+ * One turn of history, carrying the files (if any) attached *at that turn*.
+ *
+ * Files are anchored to the message they were sent with, not collected into a
+ * separate list and re-glued onto whichever message is newest. Re-gluing was
+ * the original Phase 4 design, and it produced a real bug: attach file A, ask
+ * about it, then attach a *different* file B and ask "what is this" — the
+ * model saw both files pasted onto the newest question with no way to tell
+ * which one "this" meant, and sometimes answered about A. Positioning each
+ * file next to its own question is what a real conversation actually looks
+ * like, and it is what makes "this" unambiguous.
+ */
+export interface HistoryMessage extends ChatMessage {
   attachments?: Attachment[]
+}
+
+export interface BuildContextInput {
+  /** Oldest first. The last entry is the turn being answered. */
+  messages: HistoryMessage[]
+  tier: Tier
 }
 
 /** What happened to one attachment once the budget was applied. */
@@ -55,11 +65,11 @@ export interface AttachmentOutcome {
 export interface BuiltContext {
   system: string
   messages: ChatMessage[]
-  /** How many messages were dropped to fit the budget. Surfaced to the UI. */
+  /** How many earlier turns were dropped to fit the budget. Surfaced to the UI. */
   droppedMessages: number
-  /** Token budget the history was trimmed to. Useful for the latency readout. */
+  /** Token budget left for history after the newest turn's own cost. */
   historyBudget: number
-  /** Per-file result, so the UI can warn rather than silently sending less. */
+  /** Per-file result for the turn just sent, so the UI can warn rather than silently send less. */
   attachments: AttachmentOutcome[]
 }
 
@@ -78,19 +88,19 @@ const OUTPUT_RESERVE: Record<Tier, number> = {
 }
 
 /**
- * Share of the working budget attachments may take.
+ * Share of the working budget the *newest* turn's own attachments may take.
  *
- * A file the user just attached is almost always the subject of the question,
- * so it outranks older conversation. Not all of it, though: starving history
- * makes follow-up questions incoherent, which reads as the model "forgetting"
- * the file it is looking straight at.
- *
- * The remaining budget is not wasted — history takes whatever attachments leave.
+ * Not all of it: a question with a huge attached file should still leave a
+ * little room for the turn before it, or a two-word "yes, that one" reads as
+ * the model forgetting what was just said.
  */
 const ATTACHMENT_SHARE = 0.6
 
 /** Enough of a file to be worth sending at all; below this it is just noise. */
 const MIN_USEFUL_CHARS = 400
+
+/** ~30 tokens covers the wrapper tag and the truncation note. */
+const WRAP_OVERHEAD = 30
 
 /**
  * Wraps file text so the model can tell document from question.
@@ -104,31 +114,53 @@ function wrap(filename: string, text: string, note?: string): string {
   return note ? `${open}\n${text}\n${note}\n</file>` : `${open}\n${text}\n</file>`
 }
 
-export function buildContext({ messages, tier, attachments = [] }: BuildContextInput): BuiltContext {
-  const { numCtx } = tierConfig(tier)
-  const system = systemPrompt(tier)
+/** Cost of a message on its own, files included in full, no truncation. */
+function fullCost(message: HistoryMessage): number {
+  const fileTokens = (message.attachments ?? []).reduce(
+    (sum, f) => sum + estimateTokens(f.text) + WRAP_OVERHEAD,
+    0,
+  )
+  return estimateTokens(message.content) + 4 + fileTokens // ~4 tokens of chat framing
+}
 
-  // The real limit is runtime `num_ctx`, read from the tier config rather than
-  // hardcoded — tuning it in one place must not leave a stale copy here.
-  const working = numCtx - OUTPUT_RESERVE[tier] - estimateTokens(system)
+/** Inlines a message's attachments into its content, untouched — for history
+ *  turns, which either fit whole or get dropped; there is no live UI to report
+ *  a truncation warning to once a turn is no longer the one being answered. */
+function inline(message: HistoryMessage): ChatMessage {
+  const files = message.attachments ?? []
+  if (files.length === 0) return { role: message.role, content: message.content }
+  const blocks = files.map((f) => wrap(f.filename, f.text)).join('\n\n')
+  return { role: message.role, content: `${blocks}\n\n${message.content}` }
+}
 
-  /* ------------------------------------------------------------ attachments -- */
+/**
+ * Fits the newest turn's own attachments into its share of the budget,
+ * truncating and reporting per file. This is the one turn that can never be
+ * dropped outright — it is the question being answered — so a file that does
+ * not fit is truncated with a visible note rather than the whole turn
+ * vanishing.
+ */
+function fitNewest(
+  message: HistoryMessage,
+  working: number,
+): { content: string; cost: number; outcomes: AttachmentOutcome[] } {
+  const attachments = message.attachments ?? []
+  if (attachments.length === 0) {
+    return { content: message.content, cost: estimateTokens(message.content) + 4, outcomes: [] }
+  }
 
+  const budget = Math.floor(working * ATTACHMENT_SHARE)
   const outcomes: AttachmentOutcome[] = []
   const blocks: string[] = []
-  let attachmentTokens = 0
-
-  const attachmentBudget = Math.floor(working * ATTACHMENT_SHARE)
+  let used = 0
 
   for (const file of attachments) {
-    const remaining = attachmentBudget - attachmentTokens
+    const remaining = budget - used
     const cost = estimateTokens(file.text)
-    // ~30 tokens covers the wrapper and the truncation note.
-    const overhead = 30
 
-    if (cost + overhead <= remaining) {
+    if (cost + WRAP_OVERHEAD <= remaining) {
       blocks.push(wrap(file.filename, file.text))
-      attachmentTokens += cost + overhead
+      used += cost + WRAP_OVERHEAD
       outcomes.push({
         id: file.id,
         filename: file.filename,
@@ -140,7 +172,7 @@ export function buildContext({ messages, tier, attachments = [] }: BuildContextI
     }
 
     // Doesn't fit whole. Keep a useful prefix if there is room for one.
-    const keptChars = Math.max(0, (remaining - overhead) * 4)
+    const keptChars = Math.max(0, (remaining - WRAP_OVERHEAD) * 4)
     if (keptChars < MIN_USEFUL_CHARS) {
       outcomes.push({
         id: file.id,
@@ -157,7 +189,7 @@ export function buildContext({ messages, tier, attachments = [] }: BuildContextI
     // about the end of a file it never saw, confidently.
     const note = `[... truncated: ${kept.length} of ${file.text.length} characters shown ...]`
     blocks.push(wrap(file.filename, kept, note))
-    attachmentTokens += estimateTokens(kept) + overhead
+    used += estimateTokens(kept) + WRAP_OVERHEAD
     outcomes.push({
       id: file.id,
       filename: file.filename,
@@ -167,45 +199,50 @@ export function buildContext({ messages, tier, attachments = [] }: BuildContextI
     })
   }
 
+  const content = blocks.length > 0 ? `${blocks.join('\n\n')}\n\n${message.content}` : message.content
+  return { content, cost: estimateTokens(content) + 4, outcomes }
+}
+
+export function buildContext({ messages, tier }: BuildContextInput): BuiltContext {
+  const { numCtx } = tierConfig(tier)
+  const system = systemPrompt(tier)
+
+  // The real limit is runtime `num_ctx`, read from the tier config rather than
+  // hardcoded — tuning it in one place must not leave a stale copy here.
+  const working = numCtx - OUTPUT_RESERVE[tier] - estimateTokens(system)
+
+  if (messages.length === 0) {
+    return { system, messages: [], droppedMessages: 0, historyBudget: working, attachments: [] }
+  }
+
+  const newest = messages[messages.length - 1]!
+  const older = messages.slice(0, -1)
+
+  const { content: newestContent, cost: newestCost, outcomes } = fitNewest(newest, working)
+
   /* --------------------------------------------------------------- history -- */
 
-  const historyBudget = working - attachmentTokens
-
-  // Walk backwards from the newest message, keeping whatever fits. Recency
-  // matters more than completeness, and the newest turn is the one being
-  // answered — so it is kept even if it alone exceeds the budget (the model
-  // truncates, rather than us silently answering a different question).
+  // Whatever the newest turn leaves goes to earlier history, richest (most
+  // recent) turn first. Each older turn's attachments travel with it, in
+  // full — they either fit as part of that turn or the turn is dropped
+  // whole; a truncation warning would have nowhere to display once a turn is
+  // no longer the one being answered.
+  const historyBudget = Math.max(0, working - newestCost)
   const kept: ChatMessage[] = []
   let used = 0
 
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]!
-    const cost = estimateTokens(message.content) + 4 // ~4 tokens of chat framing
-    if (used + cost > historyBudget && kept.length > 0) break
-    kept.unshift(message)
+  for (let i = older.length - 1; i >= 0; i--) {
+    const message = older[i]!
+    const cost = fullCost(message)
+    if (used + cost > historyBudget) break
+    kept.unshift(inline(message))
     used += cost
-  }
-
-  /* --------------------------------------------------------------- assembly -- */
-
-  // File text is prepended to the newest user turn rather than pushed into the
-  // system prompt or persisted into `messages.content`. It stays attached to the
-  // question it belongs to, and the stored message stays clean — which is what
-  // lets Phase 8 swap injection for retrieval without touching stored rows.
-  if (blocks.length > 0) {
-    const lastUser = kept.map((m) => m.role).lastIndexOf('user')
-    if (lastUser !== -1) {
-      kept[lastUser] = {
-        role: 'user',
-        content: `${blocks.join('\n\n')}\n\n${kept[lastUser]!.content}`,
-      }
-    }
   }
 
   return {
     system,
-    messages: kept,
-    droppedMessages: messages.length - kept.length,
+    messages: [...kept, { role: newest.role, content: newestContent }],
+    droppedMessages: older.length - kept.length,
     historyBudget,
     attachments: outcomes,
   }

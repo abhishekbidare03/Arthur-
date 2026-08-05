@@ -37,9 +37,15 @@ because tokens are what decide whether it fits.
 | `.pptx` | Per-slide text with speaker notes, by reading the file's own XML |
 | ~60 text/source types | Directly, with binary files refused rather than mangled |
 
-Context is 8192 tokens, so attachments take at most 60% of the working budget and are truncated
-rather than silently dropped — both the model and the message are told what was cut. Files stay
-available for follow-up questions without re-attaching.
+Context is 8192 tokens, so a newly-attached file takes at most 60% of the working budget and is
+truncated rather than silently dropped — both the model and the message are told what was cut.
+
+**Each file stays with the turn it was attached to**, not re-pasted onto every later message.
+Ask a follow-up about it later in the same chat and it is still there, because that turn is
+still in history — but attach a *different* file and ask "what is this", and only the new one
+answers. Gluing every attachment onto the newest question was the original design and it
+produced exactly that mix-up; a file now sits next to the question it actually belongs to, the
+way a real conversation does.
 
 **Large PDFs are still truncated.** A 16-page paper measured here holds ~22,500 tokens against
 an 8192-token window; roughly a fifth of it fits. Retrieval in Phase 8 is what makes large
@@ -123,6 +129,11 @@ cd frontend && npm test
 committed fixtures — and checks page and slide numbers survive, speaker notes are labelled, and
 each refusal is specific (a corrupt PDF, a text-free scan, and a legacy `.ppt` all say different
 things).
+
+`backend/buildContext.test.mts` pins the cross-file mix-up bug: attach file A, ask about it,
+attach a different file B, ask "what is this" — asserts B's text lands on the new turn and A's
+does not, that a genuine follow-up about A (no re-attach) still works, and that an oversized
+attachment truncates rather than dropping the whole turn.
 
 Two jsdom tests, both asserting against the rendered DOM:
 

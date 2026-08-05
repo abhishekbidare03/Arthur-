@@ -51,9 +51,10 @@ export default function App() {
 
   const [collapsed, setCollapsed] = useState(false)
   const [tier, setTier] = useState<Tier>(DEFAULT_TIER)
-  const [theme, setTheme] = useState<Theme>(() =>
-    window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
-  )
+  // Light by default regardless of OS preference — requested explicitly rather
+  // than inferred, so it does not silently flip to dark on a machine whose OS
+  // theme happens to be dark. The toggle in TopBar still switches it.
+  const [theme, setTheme] = useState<Theme>('light')
 
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [streamingId, setStreamingId] = useState<string | null>(null)

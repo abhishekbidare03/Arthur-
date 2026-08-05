@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DOCUMENTS_DIR } from '../config.ts'
-import { findExtractedByHash, insertDocument, type DocumentRow } from '../db/documents.ts'
+import { findExtractedByHash, getDocument, insertDocument, type DocumentRow } from '../db/documents.ts'
 import { extract } from './extractors/index.ts'
 
 export interface StoredDocument {
@@ -94,4 +94,21 @@ export function readDocumentText(row: DocumentRow): string {
     // crashed request; the caller reports it as unavailable.
     return ''
   }
+}
+
+/**
+ * Resolves several document ids to their text in one pass.
+ *
+ * Rebuilding conversation history looks up every attachment ever sent, and the
+ * same document can be linked to more than one message — so this reads each
+ * unique file at most once rather than once per message that references it.
+ */
+export function readDocumentTexts(ids: string[]): Map<string, string> {
+  const texts = new Map<string, string>()
+  for (const id of ids) {
+    if (texts.has(id)) continue
+    const row = getDocument(id)
+    texts.set(id, row ? readDocumentText(row) : '')
+  }
+  return texts
 }

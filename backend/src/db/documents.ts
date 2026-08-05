@@ -71,25 +71,6 @@ const stmts = {
     ORDER BY d.created_at
   `),
 
-  /**
-   * Every document attached anywhere in a conversation, newest first.
-   *
-   * Newest first is what makes a follow-up question work: when the budget
-   * cannot hold every file, the one just attached is the one being asked about.
-   * DISTINCT because the same document may be linked to several messages.
-   */
-  documentsForConversation: db.prepare(`
-    SELECT DISTINCT d.id, d.conversation_id AS conversationId, d.filename, d.mime,
-           d.byte_size AS byteSize, d.sha256, d.storage_path AS storagePath,
-           d.extracted_text_path AS extractedTextPath, d.page_count AS pageCount,
-           d.status, d.created_at AS createdAt, m.created_at AS attachedAt
-    FROM message_documents md
-    JOIN documents d ON d.id = md.document_id
-    JOIN messages m ON m.id = md.message_id
-    WHERE m.conversation_id = ? AND d.status = 'extracted'
-    ORDER BY m.created_at DESC, d.created_at DESC
-  `),
-
   /** One query for a whole conversation, rather than one per message. */
   forConversation: db.prepare(`
     SELECT md.message_id AS messageId, d.id, d.filename,
@@ -159,10 +140,6 @@ export function claimDocument(id: string, conversationId: string): void {
 
 export function linkMessageDocument(messageId: string, documentId: string): void {
   stmts.link.run({ messageId, documentId })
-}
-
-export function documentsForConversation(conversationId: string): DocumentRow[] {
-  return stmts.documentsForConversation.all(conversationId) as DocumentRow[]
 }
 
 export function attachmentsForMessage(messageId: string): AttachmentSummary[] {

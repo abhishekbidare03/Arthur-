@@ -8,15 +8,9 @@
 import express from 'express'
 import { MAX_UPLOAD_BYTES, PORT } from './config.ts'
 import { closeDb } from './db/index.ts'
-import {
-  attachmentsForConversation,
-  claimDocument,
-  documentsForConversation,
-  getDocument,
-  linkMessageDocument,
-} from './db/documents.ts'
+import { attachmentsForConversation, claimDocument, getDocument, linkMessageDocument } from './db/documents.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
-import { readDocumentText, storeUpload } from './documents/store.ts'
+import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
 import {
   createConversation,
   deleteConversation,
@@ -242,7 +236,27 @@ app.post('/api/chat', async (req, res) => {
 
   // History must be read *before* the new user row is written, then the new
   // message appended — otherwise the prompt would contain it twice.
-  const history = listMessages(conversation.id).map((m) => ({ role: m.role, content: m.content }))
+  //
+  // Each earlier turn carries its own attachments — the file(s) it was sent
+  // with, not every file ever attached anywhere in the conversation. Gluing
+  // every attachment onto the newest message was the original design here,
+  // and it caused a real bug: attach file A, ask about it, attach a
+  // *different* file B and ask "what is this" — both files landed on the
+  // question with nothing to say which one "this" meant, and the model could
+  // answer about the wrong one. Positioning a file next to the question it
+  // was actually sent with is what makes that unambiguous, and it is what a
+  // real conversation looks like.
+  const priorRows = listMessages(conversation.id)
+  const priorAttachments = attachmentsForConversation(conversation.id)
+  const priorTexts = readDocumentTexts([...priorAttachments.values()].flat().map((a) => a.id))
+
+  const history = priorRows.map((m) => {
+    const files = priorAttachments.get(m.id)
+    const attachments = files
+      ?.map((f) => ({ id: f.id, filename: f.filename, text: priorTexts.get(f.id) ?? '' }))
+      .filter((f) => f.text.length > 0)
+    return { role: m.role, content: m.content, ...(attachments?.length ? { attachments } : {}) }
+  })
 
   const userMessage = insertMessage({ conversationId: conversation.id, role: 'user', content })
   touchConversation(conversation.id, tier)
@@ -255,13 +269,11 @@ app.post('/api/chat', async (req, res) => {
     linkMessageDocument(userMessage.id, document!.id)
   }
 
-  // Everything attached anywhere in this conversation, newest first — so a
-  // follow-up question about a file attached two turns ago still works.
-  const attachments = documentsForConversation(conversation.id)
+  const attachments = uploaded
     .map((document) => ({
-      id: document.id,
-      filename: document.filename,
-      text: readDocumentText(document),
+      id: document!.id,
+      filename: document!.filename,
+      text: readDocumentText(document!),
     }))
     .filter((a) => a.text.length > 0)
 
@@ -325,7 +337,13 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     const stream = sendMessage(
-      { messages: [...history, { role: 'user', content }], tier, attachments },
+      {
+        messages: [
+          ...history,
+          { role: 'user', content, ...(attachments.length > 0 ? { attachments } : {}) },
+        ],
+        tier,
+      },
       controller.signal,
     )
 
