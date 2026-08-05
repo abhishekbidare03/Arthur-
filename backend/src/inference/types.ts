@@ -9,11 +9,13 @@
  */
 
 import type { Tier } from '../tiers.ts'
-import type { ChatMessage } from '../context/buildContext.ts'
+import type { Attachment, AttachmentOutcome, ChatMessage } from '../context/buildContext.ts'
 
 export interface SendMessageInput {
   messages: ChatMessage[]
   tier: Tier
+  /** Documents to put in context. Phase 8 replaces these with retrieved chunks. */
+  attachments?: Attachment[]
 }
 
 export interface GenerationStats {
@@ -31,6 +33,14 @@ export interface GenerationStats {
 }
 
 export type StreamEvent =
+  /**
+   * What context assembly did with the attachments, emitted before generation.
+   *
+   * Sent up front rather than folded into `done` because a truncated file
+   * changes how the answer should be read, and the user should know that while
+   * it streams rather than afterwards.
+   */
+  | { type: 'context'; attachments: AttachmentOutcome[] }
   /** A reasoning delta. Only the High tier emits these. */
   | { type: 'thinking'; delta: string }
   /** An answer delta. */

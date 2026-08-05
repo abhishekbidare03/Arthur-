@@ -5,7 +5,7 @@
  * request is a POST with a JSON body and `EventSource` can only issue GETs.
  */
 
-import type { Conversation, Message, Tier } from './types'
+import type { Attachment, AttachmentOutcome, Conversation, Message, Tier } from './types'
 
 export interface GenerationStats {
   model: string
@@ -42,6 +42,8 @@ export type ChatEvent =
       assistantMessageId: string
       createdAt: string
     }
+  /** What context assembly did with the attachments. Arrives before any token. */
+  | { type: 'context'; attachments: AttachmentOutcome[] }
   | { type: 'thinking'; delta: string }
   | { type: 'content'; delta: string }
   | { type: 'done'; stats: GenerationStats }
@@ -96,6 +98,51 @@ export function deleteConversation(id: string): Promise<void> {
   return json<void>(`/api/conversations/${id}`, { method: 'DELETE' })
 }
 
+/* -------------------------------------------------------------- documents -- */
+
+/** Thrown when the backend refuses a file, carrying its explanation verbatim. */
+export class UploadError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'UploadError'
+  }
+}
+
+/**
+ * Sends a file's bytes to the backend, which stores and extracts it.
+ *
+ * Raw body rather than `FormData`: the backend needs no multipart parser, and
+ * the bytes stay untouched for the PDFs Phase 8 will accept. The name travels
+ * in a header — percent-encoded, since headers are ASCII-only.
+ */
+export async function uploadDocument(
+  file: File,
+  conversationId: string | null,
+  signal?: AbortSignal,
+): Promise<Attachment> {
+  const query = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''
+
+  const res = await fetch(`/api/documents${query}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      'X-Arthur-Filename': encodeURIComponent(file.name),
+    },
+    body: file,
+    signal,
+  })
+
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new UploadError(body.error ?? `Upload failed (HTTP ${res.status}).`, res.status)
+  }
+
+  return (await res.json()) as Attachment
+}
+
 /* ------------------------------------------------------------------- chat -- */
 
 export interface StreamChatInput {
@@ -104,6 +151,8 @@ export interface StreamChatInput {
   conversationId?: string
   content: string
   tier: Tier
+  /** Documents uploaded for this turn. */
+  documentIds?: string[]
 }
 
 /** Yields events as the backend forwards them. */

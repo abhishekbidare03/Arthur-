@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { Message, Tier } from '../types'
 import { tierInfo } from '../types'
+import AttachmentChip from './AttachmentChip'
 import { AlertIcon } from './icons'
 import Markdown from './Markdown'
 import ThinkingPanel from './ThinkingPanel'
@@ -77,14 +78,39 @@ export default function ChatPane({
 
         {messages.map((m, i) => {
           if (m.role === 'user') {
+            // Files that did not fit whole. The model was told about the cut,
+            // and so is the user — an answer drawn from half a file is not
+            // wrong so much as differently scoped.
+            const shortfall = (m.attachmentOutcomes ?? []).filter((o) => o.state !== 'full')
+
             return (
               <div
                 key={m.id}
-                className="msg mb-7 flex justify-end"
+                className="msg mb-7 flex flex-col items-end"
                 // Stagger only the first few, so long histories do not cascade.
                 style={{ animationDelay: `${Math.min(i, 6) * 30}ms` }}
               >
+                {m.attachments && m.attachments.length > 0 && (
+                  <div className="chip-tray mb-1.5 justify-end">
+                    {m.attachments.map((a) => (
+                      <AttachmentChip key={a.id} attachment={a} />
+                    ))}
+                  </div>
+                )}
+
                 <div className="bubble-user text-[15px]">{m.content}</div>
+
+                {shortfall.length > 0 && (
+                  <p className="mt-1.5 max-w-[85%] text-right text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
+                    {shortfall.map((o) =>
+                      o.state === 'dropped'
+                        ? `${o.filename} did not fit in the context window and was not sent.`
+                        : `${o.filename} was truncated — the model saw the first ${Math.round(
+                            (o.keptChars / o.totalChars) * 100,
+                          )}%.`,
+                    ).join(' ')}
+                  </p>
+                )}
               </div>
             )
           }

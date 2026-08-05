@@ -305,6 +305,15 @@
   }
 }
 
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @keyframes pulse-dot {
   0%,
   100% {
@@ -739,6 +748,96 @@
   }
   .composer textarea::placeholder {
     color: var(--text-tertiary);
+  }
+
+  /* ------------------------------------------------------------- chips -- */
+
+  .chip-tray {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.7rem 0.75rem 0;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    max-width: 15rem;
+    padding: 0.3rem 0.4rem 0.3rem 0.55rem;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--surface-3);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.2;
+  }
+  .chip[data-error] {
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+
+  /* The name is what identifies the file, so it takes the space and the tail
+     is what gets cut — never the extension-bearing end of a short name. */
+  .chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+
+  .chip-meta {
+    flex-shrink: 0;
+    color: var(--text-tertiary);
+    font-size: 11px;
+  }
+
+  .chip-remove {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 1.05rem;
+    height: 1.05rem;
+    border-radius: var(--radius-sm);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+  }
+  .chip-remove:hover {
+    background: var(--fill-hover);
+    color: var(--text-primary);
+  }
+
+  /* ------------------------------------------------------ drag and drop -- */
+
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--surface-0) 72%, transparent);
+    backdrop-filter: blur(2px);
+    /* The overlay must not eat the drop event it exists to advertise. */
+    pointer-events: none;
+    animation: fade var(--dur-fast) var(--ease-out);
+  }
+
+  .drop-card {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.9rem 1.3rem;
+    border: 1.5px dashed var(--accent);
+    border-radius: var(--radius-lg);
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: var(--shadow-md);
   }
 
   /* Content scrolls under a fade instead of stopping at a hard edge. */

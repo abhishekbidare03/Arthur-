@@ -67,11 +67,44 @@ export function tierInfo(tier: Tier): TierInfo {
   return found
 }
 
+/**
+ * A file attached to a message.
+ *
+ * The document's *text* is never carried here — it lives in a `documents` row on
+ * the backend and is injected at context-assembly time. See seam 1 of
+ * `docs/rag-architecture.md`; this is what lets Phase 8 swap injection for
+ * retrieval without touching a single stored message.
+ */
+export interface Attachment {
+  id: string
+  filename: string
+  byteSize: number
+  /** Rough cost of including it, shown on the chip before sending. */
+  estimatedTokens?: number
+  /** Set while the upload is in flight, so the chip can show progress. */
+  uploading?: boolean
+  /** Set when the upload was refused — e.g. a PDF, or a binary file. */
+  error?: string
+}
+
+/** What context assembly did with an attachment once the budget was applied. */
+export interface AttachmentOutcome {
+  id: string
+  filename: string
+  state: 'full' | 'truncated' | 'dropped'
+  keptChars: number
+  totalChars: number
+}
+
 export interface Message {
   id: string
   conversationId: string
   role: Role
   content: string
+  /** Files sent with this message. User messages only. */
+  attachments?: Attachment[]
+  /** How much of each attachment actually reached the model. */
+  attachmentOutcomes?: AttachmentOutcome[]
   /**
    * Reasoning text, returned by Ollama as a field separate from `content`.
    * Only ever populated for the `high` tier. Rendered in a collapsible panel.

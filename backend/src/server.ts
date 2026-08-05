@@ -6,8 +6,17 @@
  */
 
 import express from 'express'
-import { PORT } from './config.ts'
+import { MAX_UPLOAD_BYTES, PORT } from './config.ts'
 import { closeDb } from './db/index.ts'
+import {
+  attachmentsForConversation,
+  claimDocument,
+  documentsForConversation,
+  getDocument,
+  linkMessageDocument,
+} from './db/documents.ts'
+import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
+import { readDocumentText, storeUpload } from './documents/store.ts'
 import {
   createConversation,
   deleteConversation,
@@ -60,7 +69,16 @@ app.get('/api/conversations/:id/messages', (req, res) => {
     res.status(404).json({ error: 'No such conversation.' })
     return
   }
-  res.json(listMessages(id))
+
+  // Attachments come back with the messages so a reloaded chat still shows its
+  // file chips. One query for the whole conversation, not one per message.
+  const byMessage = attachmentsForConversation(id)
+  res.json(
+    listMessages(id).map((m) => {
+      const attachments = byMessage.get(m.id)
+      return attachments ? { ...m, attachments } : m
+    }),
+  )
 })
 
 app.patch('/api/conversations/:id', (req, res) => {
@@ -85,10 +103,98 @@ app.delete('/api/conversations/:id', (req, res) => {
   res.status(204).end()
 })
 
+/* --------------------------------------------------------------- documents -- */
+
+/**
+ * Upload a file.
+ *
+ * Raw bytes in the body rather than multipart: it needs no parser dependency,
+ * and it keeps binary fidelity for the PDFs Phase 8 will accept. The filename
+ * travels in a header, URL-encoded, because it may contain non-ASCII — and a
+ * header rather than a query string keeps it out of URLs and logs.
+ *
+ * The upload happens when the file is picked, not when the message is sent, so
+ * an unsupported type is refused while the user can still do something about it.
+ */
+app.post(
+  '/api/documents',
+  express.raw({ type: '*/*', limit: MAX_UPLOAD_BYTES }),
+  async (req, res) => {
+    const rawName = req.get('X-Arthur-Filename')
+    if (!rawName) {
+      res.status(400).json({ error: 'Missing X-Arthur-Filename header.' })
+      return
+    }
+
+    let filename: string
+    try {
+      filename = decodeURIComponent(rawName)
+    } catch {
+      res.status(400).json({ error: 'X-Arthur-Filename is not valid percent-encoding.' })
+      return
+    }
+
+    // Defend the storage path against a crafted name. Files are stored under
+    // their hash, so the name is only ever metadata — but it is still attacker-
+    // influenced text and must never reach the filesystem.
+    filename = filename.replace(/[\\/]/g, '_').slice(0, 255)
+
+    const bytes = req.body as Buffer
+    if (!Buffer.isBuffer(bytes) || bytes.byteLength === 0) {
+      res.status(400).json({ error: 'The file is empty.' })
+      return
+    }
+
+    const conversationId =
+      typeof req.query.conversationId === 'string' && getConversation(req.query.conversationId)
+        ? req.query.conversationId
+        : undefined
+
+    try {
+      const { row, text, deduped } = await storeUpload({
+        filename,
+        bytes,
+        mime: req.get('Content-Type') ?? undefined,
+        conversationId,
+      })
+
+      res.status(201).json({
+        id: row.id,
+        filename: row.filename,
+        byteSize: row.byteSize,
+        status: row.status,
+        // Shown on the chip so the cost of attaching is visible before sending,
+        // not discovered as a truncation warning afterwards.
+        estimatedTokens: Math.ceil(text.length / 4),
+        deduped,
+      })
+    } catch (error) {
+      // An unsupported type is a normal outcome, not a server fault — and the
+      // message is the honest one ("PDF support arrives in Phase 8"), which the
+      // UI shows verbatim.
+      if (error instanceof UnsupportedFileError) {
+        res.status(415).json({ error: error.message, extension: error.extension })
+        return
+      }
+      if (error instanceof UnreadableFileError) {
+        res.status(422).json({ error: error.message })
+        return
+      }
+      console.error('[documents] upload failed:', error)
+      res.status(500).json({ error: 'The file could not be stored.' })
+    }
+  },
+)
+
 /* -------------------------------------------------------------------- chat -- */
 
 app.post('/api/chat', async (req, res) => {
-  const body = req.body as { conversationId?: unknown; content?: unknown; tier?: unknown }
+  const body = req.body as {
+    conversationId?: unknown
+    content?: unknown
+    tier?: unknown
+    documentIds?: unknown
+  }
 
   if (!isTier(body.tier)) {
     res.status(400).json({ error: 'Unknown tier.' })
@@ -101,6 +207,18 @@ app.post('/api/chat', async (req, res) => {
 
   const tier = body.tier
   const content = body.content.trim()
+
+  // Attachments are resolved before the stream opens, so an id that does not
+  // exist is a plain 400 rather than a half-streamed answer about nothing.
+  const documentIds = Array.isArray(body.documentIds)
+    ? body.documentIds.filter((id): id is string => typeof id === 'string')
+    : []
+
+  const uploaded = documentIds.map((id) => getDocument(id))
+  if (uploaded.some((d) => d === undefined)) {
+    res.status(400).json({ error: 'One of the attached files is no longer available.' })
+    return
+  }
 
   // Resolve the conversation before opening the stream, so a bad id is a plain
   // HTTP error rather than an SSE frame the UI has to special-case.
@@ -128,6 +246,24 @@ app.post('/api/chat', async (req, res) => {
 
   const userMessage = insertMessage({ conversationId: conversation.id, role: 'user', content })
   touchConversation(conversation.id, tier)
+
+  // Link the uploads to the message they were sent with, and adopt any that
+  // were uploaded before this conversation existed. File *text* is never written
+  // into the message — see `docs/rag-architecture.md`, seam 1.
+  for (const document of uploaded) {
+    claimDocument(document!.id, conversation.id)
+    linkMessageDocument(userMessage.id, document!.id)
+  }
+
+  // Everything attached anywhere in this conversation, newest first — so a
+  // follow-up question about a file attached two turns ago still works.
+  const attachments = documentsForConversation(conversation.id)
+    .map((document) => ({
+      id: document.id,
+      filename: document.filename,
+      text: readDocumentText(document),
+    }))
+    .filter((a) => a.text.length > 0)
 
   // The assistant row is created empty up front so a partial answer survives a
   // crash or a closed window — it is filled in as the stream completes. The
@@ -189,7 +325,7 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     const stream = sendMessage(
-      { messages: [...history, { role: 'user', content }], tier },
+      { messages: [...history, { role: 'user', content }], tier, attachments },
       controller.signal,
     )
 

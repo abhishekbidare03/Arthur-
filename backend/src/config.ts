@@ -25,6 +25,23 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const DB_PATH = process.env.ARTHUR_DB ?? join(ROOT, 'data', 'arthur.db')
 
 /**
+ * Uploaded files, stored content-addressed by sha256.
+ *
+ * Beside the database deliberately: `arthur.db` plus this directory is the
+ * whole of Arthur's state, which is what keeps the backup story one line long.
+ */
+export const DOCUMENTS_DIR = join(dirname(DB_PATH), 'documents')
+
+/**
+ * Hard ceiling on an upload, well above anything that could fit in context.
+ *
+ * The real limit is the per-tier token budget in `buildContext`, which truncates
+ * with a visible warning. This exists only to stop something absurd being read
+ * into memory.
+ */
+export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+
+/**
  * The tray app's server. We *connect* to it and never spawn our own — a second
  * `ollama serve` holds port 11434 and puts the tray app into a silent crash
  * loop (see `logs.md`, Session 1).

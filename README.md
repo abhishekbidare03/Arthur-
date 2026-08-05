@@ -15,14 +15,29 @@ VRAM**, which drives most of the design decisions in this repo.
 | 1 | UI shell (static) | ✅ Complete |
 | 2 | Local inference wiring | ✅ Complete |
 | 3 | Conversation persistence | ✅ Complete |
-| 4 | File input (text only) | ⬜ Next |
-| 5 | Voice in/out | ⬜ |
+| 4 | File input (text only) | ✅ Complete |
+| 5 | Voice in/out | ⬜ Next |
 | 6 | Packaging & launcher | ⬜ |
 | 7 | Polish | 🟡 Markdown + code blocks done early |
 | 8–10 | RAG over documents | ⬜ |
 
 Working chat with real streamed responses across three effort tiers, with durable local
 history in SQLite. Conversations survive restarts; rename and delete from the sidebar.
+Text files can be attached by picker or drag-and-drop and asked about.
+
+## Attachments
+
+Attach a `.md`, `.py`, `.csv` — around sixty text and source extensions — by paperclip or by
+dropping it anywhere on the chat column. The chip shows its **token** cost rather than its byte
+size, because tokens are what decide whether it fits.
+
+Context is 8192 tokens, so attachments are capped at 60% of the working budget and truncated
+rather than silently dropped; both the model and the message are told what was cut. Files stay
+available for follow-up questions without re-attaching.
+
+PDFs and Office documents are **deliberately refused** with a message saying so. A 10-page PDF
+is ~5,000 tokens — pasting one into an 8192-token window cannot work, so documents wait for
+retrieval in Phase 8 rather than shipping something that half-works.
 
 ## Effort tiers
 
@@ -99,6 +114,8 @@ Two jsdom tests, both asserting against the rendered DOM:
   streamed reply reaches the screen, across a new chat and a follow-up turn.
 - **`markdown.test.tsx`** feeds the renderer malformed fences copied verbatim from the
   conversation database and checks they come out as real code blocks.
+- **`attachments.test.tsx`** picks a file in the composer and checks the chip, the document id
+  on the request, and the truncation warning.
 
 Both exist because bugs in this layer are invisible from the backend: `/api/chat` streamed
 correctly and SQLite stored every answer while the UI was showing nothing at all.

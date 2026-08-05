@@ -4,6 +4,7 @@ import InputBar from './components/InputBar'
 import OllamaBanner from './components/OllamaBanner'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
+import { PaperclipIcon } from './components/icons'
 import {
   checkHealth,
   deleteConversation as apiDeleteConversation,
@@ -11,9 +12,18 @@ import {
   fetchMessages,
   renameConversation as apiRenameConversation,
   streamChat,
+  uploadDocument,
+  UploadError,
   type HealthStatus,
 } from './api'
-import { DEFAULT_TIER, tierInfo, type Conversation, type Message, type Tier } from './types'
+import {
+  DEFAULT_TIER,
+  tierInfo,
+  type Attachment,
+  type Conversation,
+  type Message,
+  type Tier,
+} from './types'
 
 type Theme = 'light' | 'dark'
 
@@ -49,6 +59,10 @@ export default function App() {
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const [loadingMessages, setLoadingMessages] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+
+  /** Files staged for the next message, not yet sent. */
+  const [pending, setPending] = useState<Attachment[]>([])
+  const [dragging, setDragging] = useState(false)
 
   /**
    * The model currently resident in VRAM, as far as we know.
@@ -159,11 +173,69 @@ export default function App() {
     abortRef.current?.abort()
   }
 
+  /* ------------------------------------------------------------ attachments -- */
+
+  /**
+   * Uploads files as they are picked, rather than on send.
+   *
+   * The backend is the only thing that knows whether a file is readable, so
+   * uploading now is what turns "attaching a PDF" into an immediate, honest
+   * message instead of a failure discovered after the user has typed a question.
+   */
+  async function handleAttach(files: FileList) {
+    const chosen = Array.from(files)
+
+    // Placeholder chips appear at once — reading a file is fast, but a chip that
+    // only shows up afterwards makes the click feel like it missed.
+    const placeholders: Attachment[] = chosen.map((file, i) => ({
+      id: `upload-${Date.now()}-${i}`,
+      filename: file.name,
+      byteSize: file.size,
+      uploading: true,
+    }))
+    setPending((prev) => [...prev, ...placeholders])
+
+    await Promise.all(
+      chosen.map(async (file, i) => {
+        const placeholderId = placeholders[i]!.id
+        try {
+          const attachment = await uploadDocument(file, activeId)
+          setPending((prev) => prev.map((a) => (a.id === placeholderId ? attachment : a)))
+        } catch (error) {
+          // The chip stays, showing why. A rejected file that simply vanished
+          // would look like the click was ignored.
+          const message =
+            error instanceof UploadError ? error.message : 'The file could not be read.'
+          setPending((prev) =>
+            prev.map((a) =>
+              a.id === placeholderId ? { ...a, uploading: false, error: message } : a,
+            ),
+          )
+        }
+      }),
+    )
+  }
+
+  function handleRemoveAttachment(id: string) {
+    setPending((prev) => prev.filter((a) => a.id !== id))
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setDragging(false)
+    if (streamingId) return
+    if (e.dataTransfer.files?.length) void handleAttach(e.dataTransfer.files)
+  }
+
   async function handleSend(text: string) {
     if (streamingId) return
 
     const now = new Date().toISOString()
     const info = tierInfo(tier)
+
+    // Only successfully uploaded files travel; a chip showing an error stays on
+    // screen but is not sent, and is cleared with the rest below.
+    const sending = pending.filter((a) => !a.error && !a.uploading)
 
     // Until the `start` event arrives, a new chat has no id — stage it.
     const isNewChat = activeId === null
@@ -187,12 +259,18 @@ export default function App() {
     // there is no chance of hitting an unrelated row.
     const isTarget = (m: Message) => m.id === assistantId || m.id === tempAssistantId
 
+    // The same two-id dance for the user row, so a truncation warning lands on
+    // the bubble carrying the file chips rather than on the reply.
+    let userId = tempUserId
+    const isUserTarget = (m: Message) => m.id === userId || m.id === tempUserId
+
     const userMessage: Message = {
       id: tempUserId,
       conversationId: key,
       role: 'user',
       content: text,
       createdAt: now,
+      ...(sending.length > 0 ? { attachments: sending } : {}),
     }
     const assistantMessage: Message = {
       id: tempAssistantId,
@@ -209,6 +287,9 @@ export default function App() {
       [key]: [...(prev[key] ?? []), userMessage, assistantMessage],
     }))
     setStreamingId(tempAssistantId)
+    // The tray is cleared now, not on completion: the files are already on the
+    // message bubble, and leaving them staged would re-send them next turn.
+    setPending([])
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -254,7 +335,12 @@ export default function App() {
 
     try {
       for await (const event of streamChat(
-        { ...(isNewChat ? {} : { conversationId: key }), content: text, tier },
+        {
+          ...(isNewChat ? {} : { conversationId: key }),
+          content: text,
+          tier,
+          ...(sending.length > 0 ? { documentIds: sending.map((a) => a.id) } : {}),
+        },
         controller.signal,
       )) {
         if (event.type === 'start') {
@@ -300,7 +386,16 @@ export default function App() {
 
           key = realId
           assistantId = event.assistantMessageId
+          userId = event.userMessageId
           setStreamingId(event.assistantMessageId)
+        } else if (event.type === 'context') {
+          const outcomes = event.attachments
+          setMessagesByConversation((prev) => ({
+            ...prev,
+            [key]: (prev[key] ?? []).map((m) =>
+              isUserTarget(m) ? { ...m, attachmentOutcomes: outcomes } : m,
+            ),
+          }))
         } else if (event.type === 'content') {
           pendingContent += event.delta
           schedule()
@@ -368,7 +463,31 @@ export default function App() {
         onRename={(id, title) => void handleRename(id, title)}
       />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div
+        className="relative flex min-w-0 flex-1 flex-col"
+        // Drag-and-drop anywhere in the chat column, not just onto the composer:
+        // the composer is a small target and the transcript is where attention is.
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes('Files')) return
+          e.preventDefault()
+          setDragging(true)
+        }}
+        onDragLeave={(e) => {
+          // Only when the pointer leaves the column entirely — crossing a child
+          // boundary fires this too, which would flicker the overlay.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false)
+        }}
+        onDrop={handleDrop}
+      >
+        {dragging && (
+          <div className="drop-overlay">
+            <div className="drop-card">
+              <PaperclipIcon className="h-5 w-5" />
+              <span>Drop a text file to attach it</span>
+            </div>
+          </div>
+        )}
+
         <TopBar
           tier={tier}
           onTierChange={setTier}
@@ -403,6 +522,9 @@ export default function App() {
                   onSend={(t) => void handleSend(t)}
                   onStop={handleStop}
                   streaming={streamingId !== null}
+                  attachments={pending}
+                  onAttach={(files) => void handleAttach(files)}
+                  onRemoveAttachment={handleRemoveAttachment}
                   autoFocus
                   showHint
                 />
@@ -432,6 +554,9 @@ export default function App() {
                   onSend={(t) => void handleSend(t)}
                   onStop={handleStop}
                   streaming={streamingId !== null}
+                  attachments={pending}
+                  onAttach={(files) => void handleAttach(files)}
+                  onRemoveAttachment={handleRemoveAttachment}
                 />
               </div>
             </div>
