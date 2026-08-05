@@ -54,7 +54,17 @@ ollama pull llama3.2:3b
 ollama pull qwen3:4b
 ```
 
-Then, in two terminals:
+With the Ollama tray app running, from the repo root:
+
+```powershell
+.\start.ps1
+```
+
+That checks Ollama is up, installs anything missing, and opens the backend and the dev server
+in their own windows. Ports already in use are left alone, so running it twice is harmless.
+Then open **http://localhost:5178**.
+
+Or start the two halves by hand:
 
 ```bash
 cd backend  && npm install && npm run dev   # http://127.0.0.1:5179
@@ -62,7 +72,8 @@ cd frontend && npm install && npm run dev   # http://localhost:5178
 ```
 
 Arthur connects to Ollama's tray-app server and **never spawns its own `ollama serve`** — a
-second server holds the port and silently crash-loops the tray app.
+second server holds the port and silently crash-loops the tray app. `start.ps1` therefore
+checks for Ollama and stops with instructions rather than trying to start it.
 
 ### Recommended Ollama settings
 

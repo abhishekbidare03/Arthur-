@@ -86,18 +86,6 @@ export default function App() {
     [activeId, messagesByConversation],
   )
 
-  const patchMessage = useCallback(
-    (conversationId: string, messageId: string, patch: Partial<Message>) => {
-      setMessagesByConversation((prev) => ({
-        ...prev,
-        [conversationId]: (prev[conversationId] ?? []).map((m) =>
-          m.id === messageId ? { ...m, ...patch } : m,
-        ),
-      }))
-    },
-    [],
-  )
-
   // Selecting a conversation adopts the tier it was last used with, so reopening
   // an old chat never silently answers at a different effort level.
   async function handleSelect(id: string) {
@@ -189,6 +177,16 @@ export default function App() {
     // terminal handlers below always patch the right row.
     let assistantId = tempAssistantId
 
+    // Matches the row being streamed into under *either* id.
+    //
+    // The `start` handler renames the row from the temporary id to the one the
+    // database assigned, but that rename is a queued state update while
+    // `assistantId` changes immediately — so for a brief window the two
+    // disagree about which id is live. Matching both is what makes the writes
+    // below independent of that ordering. Both ids are unique to this send, so
+    // there is no chance of hitting an unrelated row.
+    const isTarget = (m: Message) => m.id === assistantId || m.id === tempAssistantId
+
     const userMessage: Message = {
       id: tempUserId,
       conversationId: key,
@@ -232,7 +230,7 @@ export default function App() {
       setMessagesByConversation((prev) => ({
         ...prev,
         [key]: (prev[key] ?? []).map((m) =>
-          m.id === tempAssistantId
+          isTarget(m)
             ? {
                 ...m,
                 content: m.content + content,
@@ -245,6 +243,13 @@ export default function App() {
 
     const schedule = () => {
       frame ??= requestAnimationFrame(flush)
+    }
+
+    const patchTarget = (patch: Partial<Message>) => {
+      setMessagesByConversation((prev) => ({
+        ...prev,
+        [key]: (prev[key] ?? []).map((m) => (isTarget(m) ? { ...m, ...patch } : m)),
+      }))
     }
 
     try {
@@ -296,14 +301,11 @@ export default function App() {
           if (frame !== null) cancelAnimationFrame(frame)
           flush()
           loadedModelRef.current = event.stats.model
-          patchMessage(key, assistantId, {
-            streaming: false,
-            stats: event.stats,
-          })
+          patchTarget({ streaming: false, stats: event.stats })
         } else if (event.type === 'error') {
           if (frame !== null) cancelAnimationFrame(frame)
           flush()
-          patchMessage(key, assistantId, {
+          patchTarget({
             streaming: false,
             error: { code: event.code, message: event.message, detail: event.detail },
           })
