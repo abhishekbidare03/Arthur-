@@ -262,8 +262,18 @@ export default function App() {
           // the staged messages from the draft key onto the real conversation.
           const realId = event.conversationId
 
+          // Read `key` into a const *before* the reassignment below.
+          //
+          // A state updater does not run when it is queued — React invokes it
+          // later, during render. By then `key` has already been reassigned to
+          // `realId`, so an updater that closed over the variable would look for
+          // the staged messages under the new id, find nothing, and store an
+          // empty array — silently discarding the user's message and the
+          // assistant bubble it was about to stream into.
+          const stagedKey = key
+
           setMessagesByConversation((prev) => {
-            const staged = (prev[key] ?? []).map((m) =>
+            const staged = (prev[stagedKey] ?? []).map((m) =>
               m.id === tempUserId
                 ? { ...m, id: event.userMessageId, conversationId: realId }
                 : m.id === tempAssistantId
@@ -271,7 +281,7 @@ export default function App() {
                   : m,
             )
             const next = { ...prev, [realId]: staged }
-            if (key !== realId) delete next[key]
+            if (stagedKey !== realId) delete next[stagedKey]
             return next
           })
 

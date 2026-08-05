@@ -87,6 +87,17 @@ OLLAMA_KV_CACHE_TYPE=q8_0
 
 Flash attention is a prerequisite, not an optional extra.
 
+## Tests
+
+```bash
+cd frontend && npm test
+```
+
+Renders the real `App` in jsdom against a mocked SSE backend and asserts the streamed reply
+reaches the DOM, across a new chat and a follow-up turn. It exists because two separate bugs
+discarded every token on screen while the backend and database stayed perfectly correct —
+verifying `/api/chat` by hand cannot detect that at all.
+
 ## Documentation
 
 This repo keeps its reasoning, not just its code:
