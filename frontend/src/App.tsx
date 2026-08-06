@@ -3,9 +3,11 @@ import ChatPane from './components/ChatPane'
 import InputBar from './components/InputBar'
 import ModelSetup from './components/ModelSetup'
 import OllamaBanner from './components/OllamaBanner'
+import ShortcutsHelp from './components/ShortcutsHelp'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
 import { PaperclipIcon } from './components/icons'
+import { downloadConversation } from './export'
 import {
   checkHealth,
   deleteConversation as apiDeleteConversation,
@@ -65,6 +67,16 @@ export default function App() {
   /** Files staged for the next message, not yet sent. */
   const [pending, setPending] = useState<Attachment[]>([])
   const [dragging, setDragging] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
+
+  /**
+   * The composer's dictation toggle, so Ctrl+Shift+M can reach it.
+   *
+   * A ref rather than lifting the recorder into this component: recording state
+   * belongs with the composer that owns the microphone, and hoisting it here
+   * to satisfy one keyboard shortcut would spread it across two files.
+   */
+  const micRef = useRef<(() => void) | null>(null)
 
   /**
    * The model currently resident in VRAM, as far as we know.
@@ -229,18 +241,31 @@ export default function App() {
     if (e.dataTransfer.files?.length) void handleAttach(e.dataTransfer.files)
   }
 
-  async function handleSend(text: string) {
+  /**
+   * Runs one assistant turn: a new question, or a re-answer of the last one.
+   *
+   * Both paths share everything after the request goes out — the same id
+   * reconciliation, the same frame-batched streaming, the same terminal
+   * handling — so they are one function with two entry points rather than two
+   * near-copies that drift.
+   */
+  async function runTurn(input: { text: string; tier: Tier; regenerate?: boolean }) {
     if (streamingId) return
 
+    const { text, tier: turnTier, regenerate = false } = input
     const now = new Date().toISOString()
-    const info = tierInfo(tier)
+    const info = tierInfo(turnTier)
 
     // Only successfully uploaded files travel; a chip showing an error stays on
-    // screen but is not sent, and is cleared with the rest below.
-    const sending = pending.filter((a) => !a.error && !a.uploading)
+    // screen but is not sent, and is cleared with the rest below. A regenerate
+    // re-uses the files already attached to the question being re-answered, so
+    // it sends none of its own.
+    const sending = regenerate ? [] : pending.filter((a) => !a.error && !a.uploading)
 
-    // Until the `start` event arrives, a new chat has no id — stage it.
-    const isNewChat = activeId === null
+    // Until the `start` event arrives, a new chat has no id — stage it. A
+    // regenerate always has a real conversation, since there is a stored
+    // question in it to re-answer.
+    const isNewChat = !regenerate && activeId === null
     let key = isNewChat ? DRAFT : activeId!
 
     const tempUserId = `tmp-u-${Date.now()}`
@@ -284,14 +309,21 @@ export default function App() {
       streaming: true,
     }
 
-    setMessagesByConversation((prev) => ({
-      ...prev,
-      [key]: [...(prev[key] ?? []), userMessage, assistantMessage],
-    }))
+    setMessagesByConversation((prev) => {
+      const existing = prev[key] ?? []
+      if (!regenerate) return { ...prev, [key]: [...existing, userMessage, assistantMessage] }
+
+      // Re-answering: the question stays exactly as it was asked, and the old
+      // answer is replaced rather than joined by a second one. The backend
+      // deletes the same row, so the two agree without a reload.
+      const withoutStaleAnswer =
+        existing[existing.length - 1]?.role === 'assistant' ? existing.slice(0, -1) : existing
+      return { ...prev, [key]: [...withoutStaleAnswer, assistantMessage] }
+    })
     setStreamingId(tempAssistantId)
     // The tray is cleared now, not on completion: the files are already on the
     // message bubble, and leaving them staged would re-send them next turn.
-    setPending([])
+    if (!regenerate) setPending([])
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -340,7 +372,8 @@ export default function App() {
         {
           ...(isNewChat ? {} : { conversationId: key }),
           content: text,
-          tier,
+          tier: turnTier,
+          ...(regenerate ? { regenerate: true } : {}),
           ...(sending.length > 0 ? { documentIds: sending.map((a) => a.id) } : {}),
         },
         controller.signal,
@@ -375,14 +408,14 @@ export default function App() {
 
           if (isNewChat) {
             setConversations((prev) => [
-              { id: realId, title: event.title, tier, createdAt: now, updatedAt: now },
+              { id: realId, title: event.title, tier: turnTier, createdAt: now, updatedAt: now },
               ...prev.filter((c) => c.id !== realId),
             ])
             setActiveId(realId)
             setLoadedIds((prev) => new Set(prev).add(realId))
           } else {
             setConversations((prev) =>
-              prev.map((c) => (c.id === realId ? { ...c, updatedAt: now, tier } : c)),
+              prev.map((c) => (c.id === realId ? { ...c, updatedAt: now, tier: turnTier } : c)),
             )
           }
 
@@ -436,6 +469,98 @@ export default function App() {
       abortRef.current = null
     }
   }
+
+  function handleSend(text: string) {
+    void runTurn({ text, tier })
+  }
+
+  /**
+   * Re-answers the last question, optionally at a different effort tier.
+   *
+   * The tier is adopted for the conversation rather than being a one-off: on
+   * this hardware the reason to retry at High is usually "the answer wasn't
+   * good enough", and the next question is likely to want the same. Reverting
+   * silently afterwards would make the next reply's quality inexplicable.
+   */
+  function handleRegenerate(at: Tier) {
+    if (!activeId || streamingId) return
+    setTier(at)
+    // Content is ignored on a regenerate — the backend answers the question
+    // already stored, so nothing is re-typed and no file is re-uploaded.
+    void runTurn({ text: '', tier: at, regenerate: true })
+  }
+
+  function handleExport() {
+    const conversation = conversations.find((c) => c.id === activeId)
+    if (!conversation || activeMessages.length === 0) return
+    downloadConversation(conversation, activeMessages)
+  }
+
+  /**
+   * Application-wide shortcuts.
+   *
+   * Bound on `window` rather than on a focused element because the composer
+   * holds focus almost all the time, and a shortcut that only works when
+   * nothing is focused is a shortcut that never works. Anything that would
+   * hijack ordinary typing is guarded: `?` only fires when the user is not in
+   * a text field, while the Ctrl combinations are safe anywhere.
+   */
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null
+      // Tag name rather than `instanceof HTMLTextAreaElement`: that compares
+      // against the constructor of *this* realm, so it silently returns false
+      // for an element from another document — and an `instanceof` that throws
+      // or quietly fails takes the whole handler with it.
+      const tag = target?.tagName
+      const typing = tag === 'TEXTAREA' || tag === 'INPUT' || target?.isContentEditable === true
+
+      if (e.key === '?' && !typing && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        setShowShortcuts(true)
+        return
+      }
+
+      if (!e.ctrlKey && !e.metaKey) return
+
+      // Ctrl+Shift+M for dictation, not Ctrl+M: bare Ctrl+M is a carriage
+      // return in a textarea and browsers still honour it.
+      if (e.shiftKey && e.key.toLowerCase() === 'm') {
+        e.preventDefault()
+        micRef.current?.()
+        return
+      }
+      if (e.shiftKey) return
+
+      switch (e.key.toLowerCase()) {
+        case 'n':
+          e.preventDefault()
+          handleNewChat()
+          break
+        case 'e':
+          e.preventDefault()
+          handleExport()
+          break
+        case 'b':
+          e.preventDefault()
+          setCollapsed((v) => !v)
+          break
+        case '1':
+        case '2':
+        case '3': {
+          // Switching mid-generation would leave the streaming reply labelled
+          // with a model that did not produce it.
+          if (streamingId) break
+          e.preventDefault()
+          setTier((['low', 'medium', 'high'] as const)[Number(e.key) - 1]!)
+          break
+        }
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
 
   // The greeting screen is for a genuinely new chat. Without the `loading`
   // guard, clicking a stored conversation flashes the greeting for as long as
@@ -502,6 +627,8 @@ export default function App() {
           onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
           disabled={streamingId !== null}
           installed={health?.installed}
+          onExport={activeId && activeMessages.length > 0 ? handleExport : undefined}
+          onShowShortcuts={() => setShowShortcuts(true)}
         />
 
         {isEmptyState ? (
@@ -526,12 +653,13 @@ export default function App() {
 
               <div style={{ animation: 'rise 560ms var(--ease-out) 80ms backwards' }}>
                 <InputBar
-                  onSend={(t) => void handleSend(t)}
+                  onSend={handleSend}
                   onStop={handleStop}
                   streaming={streamingId !== null}
                   attachments={pending}
                   onAttach={(files) => void handleAttach(files)}
                   onRemoveAttachment={handleRemoveAttachment}
+                  micToggleRef={micRef}
                   autoFocus
                   showHint
                 />
@@ -553,23 +681,27 @@ export default function App() {
               tier={tier}
               willReloadModel={willReloadModel}
               loading={loadingMessages}
+              onRegenerate={handleRegenerate}
             />
             <div className="composer-scrim shrink-0 px-6 pb-5 pt-3">
               <div className="mx-auto w-full max-w-3xl">
                 {banner}
                 <InputBar
-                  onSend={(t) => void handleSend(t)}
+                  onSend={handleSend}
                   onStop={handleStop}
                   streaming={streamingId !== null}
                   attachments={pending}
                   onAttach={(files) => void handleAttach(files)}
                   onRemoveAttachment={handleRemoveAttachment}
+                  micToggleRef={micRef}
                 />
               </div>
             </div>
           </>
         )}
       </div>
+
+      {showShortcuts && <ShortcutsHelp onClose={() => setShowShortcuts(false)} />}
     </div>
   )
 }

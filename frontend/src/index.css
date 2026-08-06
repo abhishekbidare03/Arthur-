@@ -959,6 +959,75 @@
     opacity: 0.6;
   }
 
+  /* A row in a dropdown menu. */
+  .menu-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.45rem 0.75rem;
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .menu-item:hover:not(:disabled) {
+    background: var(--fill-hover);
+  }
+  .menu-item:disabled {
+    cursor: default;
+    color: var(--text-tertiary);
+  }
+
+  /* Modal - the shortcut sheet, and Phase 9's collection dialogs. */
+  .modal-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: color-mix(in srgb, var(--surface-0) 55%, transparent);
+    backdrop-filter: blur(3px);
+    animation: fade var(--dur-fast) var(--ease-out);
+  }
+  .modal-panel {
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 1.15rem 1.25rem;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-default);
+    background: var(--surface-1);
+    box-shadow: var(--shadow-lg);
+    animation: rise var(--dur-base) var(--ease-out);
+  }
+
+  /* Actions under a finished answer. Quiet enough to disappear until looked
+     for - the answer is the content, these are not. */
+  .meta-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    height: 1.75rem;
+    padding: 0 0.5rem;
+    border-radius: var(--radius-md);
+    color: var(--text-tertiary);
+    font-size: 12px;
+    cursor: pointer;
+    transition:
+      background var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+  .meta-btn:hover:not(:disabled) {
+    background: var(--fill-hover);
+    color: var(--text-secondary);
+  }
+  .meta-btn:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+
   /* First-launch model download. */
   .setup-track {
     height: 3px;

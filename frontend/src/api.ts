@@ -277,6 +277,12 @@ export interface StreamChatInput {
   tier: Tier
   /** Documents uploaded for this turn. */
   documentIds?: string[]
+  /**
+   * Re-answer the question already stored as the last turn, replacing its
+   * answer. `content` and `documentIds` are ignored — the whole point is that
+   * nothing is retyped and no file is re-uploaded.
+   */
+  regenerate?: boolean
 }
 
 /** Yields events as the backend forwards them. */

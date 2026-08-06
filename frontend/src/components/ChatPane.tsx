@@ -4,7 +4,7 @@ import { tierInfo } from '../types'
 import AttachmentChip from './AttachmentChip'
 import { AlertIcon } from './icons'
 import Markdown from './Markdown'
-import SpeakButton from './SpeakButton'
+import MessageMeta from './MessageMeta'
 import ThinkingPanel from './ThinkingPanel'
 
 interface ChatPaneProps {
@@ -16,6 +16,8 @@ interface ChatPaneProps {
   willReloadModel?: boolean
   /** True while a stored conversation's messages are being fetched. */
   loading?: boolean
+  /** Re-answers the last question, optionally at a different tier. */
+  onRegenerate?: (tier: Tier) => void
 }
 
 /** Human-readable remedy for each backend failure code. */
@@ -40,6 +42,7 @@ export default function ChatPane({
   tier,
   willReloadModel = false,
   loading = false,
+  onRegenerate,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -167,8 +170,18 @@ export default function ChatPane({
               {/* Only once the answer is complete — reading a half-streamed
                   message would speak a sentence that is still being written. */}
               {m.content && !isStreaming && !m.error && (
-                <div className="mt-1 -ml-1.5">
-                  <SpeakButton content={m.content} />
+                <div className="-ml-1.5">
+                  <MessageMeta
+                    content={m.content}
+                    stats={m.stats}
+                    tier={tier}
+                    // Only the last message. Re-answering an earlier turn would
+                    // mean discarding every exchange after it, which is a
+                    // different and much more destructive action than the one
+                    // this button appears to offer.
+                    onRegenerate={i === messages.length - 1 ? onRegenerate : undefined}
+                    disabled={streamingId !== null}
+                  />
                 </div>
               )}
 

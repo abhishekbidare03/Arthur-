@@ -18,7 +18,7 @@ VRAM**, which drives most of the design decisions in this repo.
 | 4 | File input (text only) | ✅ Complete |
 | 5 | Voice in/out | ✅ Complete |
 | 6 | Packaging & launcher | ✅ Complete |
-| 7 | Polish | 🟡 Markdown + code blocks done early |
+| 7 | Polish | ✅ Complete |
 | 8 | RAG core (chunking, embeddings, hybrid retrieval) | 🟡 Core done, citation UI pending |
 | 9–10 | Collections, advanced formats | ⬜ |
 
@@ -89,6 +89,26 @@ through the browser — no model, no download. Markdown is stripped to prose fir
 is announced rather than read out backtick by backtick. Voices that synthesize over the network
 (Chrome's "Google …" ones) are filtered out; if a machine has *only* those, the button hides
 itself rather than quietly making a network call.
+
+## Finishing touches
+
+Under every finished answer: **how long it actually took** — time to first token, measured
+tok/s, output tokens, with the full breakdown on hover. Which tier is worth its wait is a real,
+repeated decision on this hardware, and it can't be made from a number measured once on an idle
+machine. If earlier turns were dropped to fit the context window, it says so — an answer
+assembled without the start of a conversation can be wrong in a way that looks entirely
+confident.
+
+**Retry at a different tier** without retyping anything. The question stays exactly as asked,
+attached files come with it, and the stale answer is *replaced* rather than joined by a second
+one. The tier you pick is adopted for the rest of the conversation.
+
+**Export as Markdown** (`Ctrl+E`) — code fences intact, reasoning collapsed into a `<details>`,
+attachments named, stopped replies marked. Built from what's already on screen, so it works even
+with the backend down.
+
+Shortcuts: `Ctrl+N` new chat · `Ctrl+E` export · `Ctrl+B` sidebar · `Ctrl+1/2/3` tier ·
+`Ctrl+Shift+M` dictate · `Esc` stop · `?` for the list.
 
 ## Effort tiers
 
@@ -214,6 +234,12 @@ Two jsdom tests, both asserting against the rendered DOM:
   into* the recorder to check that words land in the composer **while recording is still
   running** — the point of the feature — that phrases accumulate in order, that the mic and
   audio context are released on stop, and that nothing is auto-sent.
+- **`polish.test.tsx`** covers the Phase 7 behaviours that fail *silently* rather than visibly:
+  that the latency readout comes from what this reply measured rather than the tier table, that
+  retry replaces the previous answer instead of appending a second one under the same question,
+  and that the Markdown export round-trips code fences, reasoning, attachment names and a
+  stopped reply. The retry assertion counts rendered answer bodies rather than matching text —
+  the substring version passed even with the replacement sabotaged.
 - **`segmenter.test.mts`** covers the logic that decides when a phrase has ended: a real pause
   ends one, a gap between words does not (or dictation would fragment into unusable scraps), a
   long unbroken run is still cut so text keeps appearing, and silence is never sent at all.

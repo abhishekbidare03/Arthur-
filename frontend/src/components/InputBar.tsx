@@ -18,6 +18,12 @@ interface InputBarProps {
   attachments?: Attachment[]
   onAttach?: (files: FileList) => void
   onRemoveAttachment?: (id: string) => void
+  /**
+   * Filled with this composer's dictation toggle while it is mounted, so a
+   * global shortcut can reach it. A ref rather than lifting recording state to
+   * the app: the microphone belongs to the composer that opened it.
+   */
+  micToggleRef?: React.RefObject<(() => void) | null>
 }
 
 const MAX_HEIGHT_PX = 208
@@ -48,6 +54,7 @@ export default function InputBar({
   attachments = [],
   onAttach,
   onRemoveAttachment,
+  micToggleRef,
 }: InputBarProps) {
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -209,6 +216,17 @@ export default function InputBar({
       setRecording(false)
     }
   }
+
+  // Published on every render so the shortcut always calls a toggle that sees
+  // the current recording state, and cleared on unmount so the empty-state
+  // composer's stale toggle cannot be fired once the chat view replaces it.
+  useEffect(() => {
+    if (!micToggleRef) return
+    micToggleRef.current = () => void toggleRecording()
+    return () => {
+      micToggleRef.current = null
+    }
+  })
 
   return (
     <div>

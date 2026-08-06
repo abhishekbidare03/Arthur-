@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { TIERS, tierInfo, type Tier } from '../types'
-import { ChevronDownIcon, MoonIcon, SettingsIcon, SunIcon } from './icons'
+import {
+  ChevronDownIcon,
+  DownloadIcon,
+  KeyboardIcon,
+  MoonIcon,
+  SettingsIcon,
+  SunIcon,
+} from './icons'
 
 interface TopBarProps {
   tier: Tier
@@ -11,6 +18,10 @@ interface TopBarProps {
   disabled?: boolean
   /** Models Ollama actually has pulled, from `/api/health`. */
   installed?: string[]
+  /** Absent when there is nothing to export — a new, empty chat. */
+  onExport?: () => void
+  /** Opens the keyboard-shortcut sheet. */
+  onShowShortcuts?: () => void
 }
 
 /**
@@ -24,21 +35,31 @@ export default function TopBar({
   onToggleTheme,
   disabled = false,
   installed,
+  onExport,
+  onShowShortcuts,
 }: TopBarProps) {
   const [open, setOpen] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const active = tierInfo(tier)
 
   // Close on outside click and on Escape — a dropdown that traps the user is
-  // worse than no dropdown.
+  // worse than no dropdown. One effect for both popovers: they are never open
+  // at the same time, and two copies of this would be two things to keep in
+  // step.
   useEffect(() => {
-    if (!open) return
+    if (!open && !menuOpen) return
 
     function onPointerDown(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+      const target = e.target as Node
+      if (wrapRef.current && !wrapRef.current.contains(target)) setOpen(false)
+      if (menuRef.current && !menuRef.current.contains(target)) setMenuOpen(false)
     }
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      setOpen(false)
+      setMenuOpen(false)
     }
 
     document.addEventListener('mousedown', onPointerDown)
@@ -47,7 +68,7 @@ export default function TopBar({
       document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [open])
+  }, [open, menuOpen])
 
   return (
     <header className="topbar sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between px-3.5">
@@ -141,9 +162,53 @@ export default function TopBar({
         >
           {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
         </button>
-        <button className="btn-icon" aria-label="Settings" title="Settings">
-          <SettingsIcon />
-        </button>
+        {/* The gear was a placeholder through Phases 1–6. It now holds the
+            actions that have nowhere else to live: there is no menu bar in a
+            `chrome --app=` window, and neither of these deserves its own
+            permanent icon. */}
+        <div className="relative" ref={menuRef}>
+          <button
+            className="btn-icon"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            aria-label="Settings"
+            title="Settings"
+          >
+            <SettingsIcon />
+          </button>
+
+          {menuOpen && (
+            <div role="menu" className="popover absolute right-0 top-full z-30 mt-1.5 w-[236px] py-1">
+              <button
+                role="menuitem"
+                className="menu-item"
+                disabled={!onExport}
+                title={onExport ? undefined : 'This chat has nothing in it yet'}
+                onClick={() => {
+                  setMenuOpen(false)
+                  onExport?.()
+                }}
+              >
+                <DownloadIcon className="h-4 w-4" />
+                <span className="flex-1 text-left">Export as Markdown</span>
+                <span className="kbd">Ctrl E</span>
+              </button>
+              <button
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onShowShortcuts?.()
+                }}
+              >
+                <KeyboardIcon className="h-4 w-4" />
+                <span className="flex-1 text-left">Keyboard shortcuts</span>
+                <span className="kbd">?</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   )

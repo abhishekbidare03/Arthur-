@@ -10,7 +10,13 @@ import { join } from 'node:path'
 import express from 'express'
 import { APP_MODE, MAX_AUDIO_BYTES, MAX_UPLOAD_BYTES, PORT, WEB_DIR } from './config.ts'
 import { closeDb } from './db/index.ts'
-import { attachmentsForConversation, claimDocument, getDocument, linkMessageDocument } from './db/documents.ts'
+import {
+  attachmentsForConversation,
+  attachmentsForMessage,
+  claimDocument,
+  getDocument,
+  linkMessageDocument,
+} from './db/documents.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
 import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
 import { ingestDocument } from './rag/ingest.ts'
@@ -29,6 +35,7 @@ import {
   messageCount,
   renameConversation,
   touchConversation,
+  type MessageRow,
 } from './db/conversations.ts'
 import { checkOllama, pullModel, sendMessage } from './inference/ollama.ts'
 import { InferenceError, type GenerationStats, type StreamEvent } from './inference/types.ts'
@@ -345,25 +352,43 @@ app.post('/api/chat', async (req, res) => {
     content?: unknown
     tier?: unknown
     documentIds?: unknown
+    regenerate?: unknown
   }
 
   if (!isTier(body.tier)) {
     res.status(400).json({ error: 'Unknown tier.' })
     return
   }
-  if (typeof body.content !== 'string' || body.content.trim().length === 0) {
+
+  /**
+   * Re-answer the last question instead of asking a new one.
+   *
+   * The message being answered already exists, so nothing is re-typed and no
+   * file is re-uploaded — the point of the feature is precisely that switching
+   * tier should cost nothing but the wait. The stale answer is deleted rather
+   * than kept alongside the new one: this is "answer that again", not a
+   * branching history, and two answers to one question in a linear transcript
+   * is a different (larger) feature than the one asked for.
+   */
+  const regenerate = body.regenerate === true
+
+  if (!regenerate && (typeof body.content !== 'string' || body.content.trim().length === 0)) {
     res.status(400).json({ error: 'content must be a non-empty string.' })
+    return
+  }
+  if (regenerate && typeof body.conversationId !== 'string') {
+    res.status(400).json({ error: 'regenerate needs an existing conversation.' })
     return
   }
 
   const tier = body.tier
-  const content = body.content.trim()
 
   // Attachments are resolved before the stream opens, so an id that does not
   // exist is a plain 400 rather than a half-streamed answer about nothing.
-  const documentIds = Array.isArray(body.documentIds)
-    ? body.documentIds.filter((id): id is string => typeof id === 'string')
-    : []
+  const documentIds =
+    !regenerate && Array.isArray(body.documentIds)
+      ? body.documentIds.filter((id): id is string => typeof id === 'string')
+      : []
 
   const uploaded = documentIds.map((id) => getDocument(id))
   if (uploaded.some((d) => d === undefined)) {
@@ -382,28 +407,75 @@ app.post('/api/chat', async (req, res) => {
   }
 
   const isNew = !conversation
-  conversation ??= createConversation(tier, deriveTitle(content))
+  const draftTitle = typeof body.content === 'string' ? deriveTitle(body.content.trim()) : 'New chat'
+  conversation ??= createConversation(tier, draftTitle)
 
   // A conversation created empty (via POST /api/conversations) still needs its
   // title on the first real message.
-  if (!isNew && messageCount(conversation.id) === 0) {
-    const renamed = renameConversation(conversation.id, deriveTitle(content))
+  if (!isNew && !regenerate && messageCount(conversation.id) === 0) {
+    const renamed = renameConversation(conversation.id, draftTitle)
     if (renamed) conversation = renamed
   }
 
-  // History must be read *before* the new user row is written, then the new
-  // message appended — otherwise the prompt would contain it twice.
-  //
-  // Each earlier turn carries its own attachments — the file(s) it was sent
-  // with, not every file ever attached anywhere in the conversation. Gluing
-  // every attachment onto the newest message was the original design here,
-  // and it caused a real bug: attach file A, ask about it, attach a
-  // *different* file B and ask "what is this" — both files landed on the
-  // question with nothing to say which one "this" meant, and the model could
-  // answer about the wrong one. Positioning a file next to the question it
-  // was actually sent with is what makes that unambiguous, and it is what a
-  // real conversation looks like.
-  const priorRows = listMessages(conversation.id)
+  /*
+   * History must be read *before* the new user row is written, then the new
+   * message appended — otherwise the prompt would contain it twice.
+   *
+   * Each earlier turn carries its own attachments — the file(s) it was sent
+   * with, not every file ever attached anywhere in the conversation. Gluing
+   * every attachment onto the newest message was the original design here,
+   * and it caused a real bug: attach file A, ask about it, attach a
+   * *different* file B and ask "what is this" — both files landed on the
+   * question with nothing to say which one "this" meant, and the model could
+   * answer about the wrong one. Positioning a file next to the question it
+   * was actually sent with is what makes that unambiguous, and it is what a
+   * real conversation looks like.
+   */
+  const stored = listMessages(conversation.id)
+
+  let content: string
+  let userMessage: MessageRow
+  let priorRows: MessageRow[]
+  /** Document ids attached to the turn being answered. */
+  let turnDocumentIds: string[]
+
+  if (regenerate) {
+    // Drop the answer being replaced. Only a trailing *assistant* row is
+    // removed — a conversation whose last row is a user message is one whose
+    // generation already failed, and re-answering it is exactly right.
+    const last = stored[stored.length - 1]
+    if (last?.role === 'assistant') {
+      deleteMessage(last.id)
+      stored.pop()
+    }
+
+    const target = stored.pop()
+    if (!target || target.role !== 'user') {
+      res.status(400).json({ error: 'There is no question here to answer again.' })
+      return
+    }
+
+    content = target.content
+    userMessage = target
+    priorRows = stored
+    turnDocumentIds = (attachmentsForMessage(target.id) ?? []).map((a) => a.id)
+  } else {
+    content = (body.content as string).trim()
+    priorRows = stored
+    userMessage = insertMessage({ conversationId: conversation.id, role: 'user', content })
+    turnDocumentIds = documentIds
+
+    // Link the uploads to the message they were sent with, and adopt any that
+    // were uploaded before this conversation existed. File *text* is never
+    // written into the message — see `docs/rag-architecture.md`, seam 1.
+    for (const document of uploaded) {
+      claimDocument(document!.id, conversation.id)
+      linkMessageDocument(userMessage.id, document!.id)
+    }
+  }
+
+  touchConversation(conversation.id, tier)
+
   const priorAttachments = attachmentsForConversation(conversation.id)
   const priorTexts = readDocumentTexts([...priorAttachments.values()].flat().map((a) => a.id))
 
@@ -420,27 +492,18 @@ app.post('/api/chat', async (req, res) => {
     return { role: m.role, content: m.content, ...(attachments?.length ? { attachments } : {}) }
   })
 
-  const userMessage = insertMessage({ conversationId: conversation.id, role: 'user', content })
-  touchConversation(conversation.id, tier)
-
-  // Link the uploads to the message they were sent with, and adopt any that
-  // were uploaded before this conversation existed. File *text* is never written
-  // into the message — see `docs/rag-architecture.md`, seam 1.
-  for (const document of uploaded) {
-    claimDocument(document!.id, conversation.id)
-    linkMessageDocument(userMessage.id, document!.id)
-  }
-
-  const attachments = uploaded
+  const attachments = turnDocumentIds
+    .map((id) => getDocument(id))
+    .filter((document) => document !== undefined)
     .map((document) => ({
-      id: document!.id,
-      filename: document!.filename,
-      text: readDocumentText(document!),
+      id: document.id,
+      filename: document.filename,
+      text: readDocumentText(document),
       // Re-read fresh rather than trusting the upload response: ingestion can
       // still be running for a file attached and sent in quick succession,
       // and `buildContext` needs to know the *current* state to decide
       // whether retrieval is actually available.
-      indexed: getDocument(document!.id)?.status === 'indexed',
+      indexed: document.status === 'indexed',
     }))
     .filter((a) => a.text.length > 0)
 
