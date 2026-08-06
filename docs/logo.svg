@@ -99,13 +99,13 @@
     @keyframes heat { 0%,100% { opacity: .32 } 50% { opacity: .6 } }
   </style>
 
-  <!-- Heat haze behind everything ------------------------------------------ -->
+  <!-- Heat haze behind everything ────────────────────────────────────────── -->
   <g filter="url(#haze)" class="heat">
     <ellipse cx="190" cy="86" rx="150" ry="34" fill="#ea580c" opacity=".45"/>
     <ellipse cx="190" cy="70" rx="96"  ry="26" fill="#f59e0b" opacity=".35"/>
   </g>
 
-  <!-- Flames ---------------------------------------------------------------- -->
+  <!-- Flames ──────────────────────────────────────────────────────────── -->
   <g filter="url(#haze)" opacity=".9">
     <g transform="translate(30,114)  scale(1.05)"><use href="#lick" fill="url(#flame)" class="lick f2"/></g>
     <g transform="translate(66,116)  scale(1.35)"><use href="#lick" fill="url(#flame)" class="lick f1"/></g>
@@ -118,14 +118,14 @@
     <g transform="translate(350,114) scale(1.0)" ><use href="#lick" fill="url(#flame)" class="lick f3"/></g>
   </g>
 
-  <!-- Hot cores, unblurred, so the fire has something solid inside it -------- -->
+  <!-- Hot cores, unblurred, so the fire has something solid inside it ──────── -->
   <g opacity=".85">
     <g transform="translate(66,114)  scale(.62)"><use href="#lick" fill="url(#core)" class="lick f3"/></g>
     <g transform="translate(190,116) scale(.8)" ><use href="#lick" fill="url(#core)" class="lick f2"/></g>
     <g transform="translate(314,114) scale(.6)" ><use href="#lick" fill="url(#core)" class="lick f1"/></g>
   </g>
 
-  <!-- Embers ---------------------------------------------------------------- -->
+  <!-- Embers ──────────────────────────────────────────────────────────── -->
   <g fill="#fbbf24">
     <circle class="ember" cx="74"  cy="104" r="2.1" style="animation-delay:0s"/>
     <circle class="ember" cx="128" cy="108" r="1.5" style="animation-delay:-1.1s"/>
@@ -135,7 +135,7 @@
     <circle class="ember" cx="340" cy="109" r="1.4" style="animation-delay:-2.8s"/>
   </g>
 
-  <!-- Wordmark -------------------------------------------------------------- -->
+  <!-- Wordmark ──────────────────────────────────────────────────────────── -->
   <!-- Drawn three times: a blurred hot copy for the bloom, the gradient copy
        outlined in ember red so it holds up on a white page as well as a dark
        one, and the sheen sweeping over the top. -->
