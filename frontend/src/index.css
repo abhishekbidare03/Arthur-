@@ -979,6 +979,19 @@
     color: var(--text-tertiary);
   }
 
+  /* A retrieved passage, shown verbatim. The left rule marks it as quoted
+     source material rather than something Arthur wrote. */
+  .citation {
+    padding: 0.55rem 0.75rem;
+    border-radius: var(--radius-md);
+    border-left: 2px solid var(--border-strong);
+    background: var(--fill-subtle);
+    /* Long passages must not push the answer off screen. */
+    max-height: 15rem;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+
   /* Modal - the shortcut sheet, and Phase 9's collection dialogs. */
   .modal-scrim {
     position: fixed;

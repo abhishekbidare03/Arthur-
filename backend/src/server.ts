@@ -20,6 +20,7 @@ import {
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
 import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
 import { ingestDocument, reindexPending } from './rag/ingest.ts'
+import { recordSources, sourcesForConversation } from './db/sources.ts'
 import { warmEmbeddings } from './rag/embed.ts'
 import { MAX_AUDIO_SECONDS, transcribe, warmTranscription } from './voice/transcribe.ts'
 import { UnreadableAudioError } from './voice/types.ts'
@@ -144,13 +145,20 @@ app.get('/api/conversations/:id/messages', (req, res) => {
     return
   }
 
-  // Attachments come back with the messages so a reloaded chat still shows its
-  // file chips. One query for the whole conversation, not one per message.
+  // Attachments and citations come back with the messages so a reloaded chat
+  // still shows its file chips and still says which passages an answer came
+  // from. One query each for the whole conversation, not one per message.
   const byMessage = attachmentsForConversation(id)
+  const sources = sourcesForConversation(id)
   res.json(
     listMessages(id).map((m) => {
       const attachments = byMessage.get(m.id)
-      return attachments ? { ...m, attachments } : m
+      const cited = sources.get(m.id)
+      return {
+        ...m,
+        ...(attachments ? { attachments } : {}),
+        ...(cited ? { sources: cited } : {}),
+      }
     }),
   )
 })
@@ -224,7 +232,50 @@ app.post(
         ? req.query.conversationId
         : undefined
 
+    /*
+     * Progress is reported as SSE when the client asks for it.
+     *
+     * Indexing stays *inside* this request rather than moving to a background
+     * job, because the guarantee it buys is worth keeping: the very next
+     * request can be the message attaching this file, and retrieval needs the
+     * index to already exist by then. Streaming progress is how that wait
+     * becomes visible without giving the guarantee up. A client that does not
+     * ask still gets one JSON response, which is what the tests and any
+     * scripted use rely on.
+     */
+    const streaming = (req.get('Accept') ?? '').includes('text/event-stream')
+    let headersSent = false
+
+    const emit = (event: Record<string, unknown>) => {
+      if (!streaming || res.writableEnded) return
+      if (!headersSent) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        res.flushHeaders()
+        headersSent = true
+      }
+      res.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
+
+    /** Sends a terminal result down whichever channel is in use. An error that
+     *  arrives *after* the stream has opened cannot become an HTTP status, so
+     *  it has to travel as an event instead. */
+    const finish = (status: number, payload: Record<string, unknown>) => {
+      if (streaming) {
+        emit(status < 400 ? { stage: 'done', document: payload } : { stage: 'error', ...payload })
+        res.end()
+        return
+      }
+      res.status(status).json(payload)
+    }
+
     try {
+      emit({ stage: 'reading' })
+
       const { row, text, pages, deduped } = await storeUpload({
         filename,
         bytes,
@@ -245,13 +296,15 @@ app.post(
       // path, not a crash.
       let status = row.status
       try {
-        await ingestDocument(row, pages)
+        await ingestDocument(row, pages, (done, total) =>
+          emit({ stage: 'indexing', done, total }),
+        )
         status = 'indexed'
       } catch (indexError) {
         console.error('[documents] indexing failed, falling back to truncation:', indexError)
       }
 
-      res.status(201).json({
+      finish(201, {
         id: row.id,
         filename: row.filename,
         byteSize: row.byteSize,
@@ -266,15 +319,15 @@ app.post(
       // message is the honest one ("PDF support arrives in Phase 8"), which the
       // UI shows verbatim.
       if (error instanceof UnsupportedFileError) {
-        res.status(415).json({ error: error.message, extension: error.extension })
+        finish(415, { error: error.message, extension: error.extension })
         return
       }
       if (error instanceof UnreadableFileError) {
-        res.status(422).json({ error: error.message })
+        finish(422, { error: error.message })
         return
       }
       console.error('[documents] upload failed:', error)
-      res.status(500).json({ error: 'The file could not be stored.' })
+      finish(500, { error: 'The file could not be stored.' })
     }
   },
 )
@@ -564,6 +617,9 @@ app.post('/api/chat', async (req, res) => {
   let reasoning = ''
   let stats: GenerationStats | undefined
   let failed = false
+  /** Passages retrieval put in front of the model, kept so they can be written
+   *  against the finished message rather than only streamed. */
+  let cited: { chunkId: string; score: number }[] = []
 
   try {
     const stream = sendMessage(
@@ -581,6 +637,7 @@ app.post('/api/chat', async (req, res) => {
       if (event.type === 'content') answer += event.delta
       else if (event.type === 'thinking') reasoning += event.delta
       else if (event.type === 'done') stats = event.stats
+      else if (event.type === 'context') cited = event.sources
 
       if (!res.writableEnded) send(event)
     }
@@ -616,6 +673,10 @@ app.post('/api/chat', async (req, res) => {
         stats,
         stopped,
       })
+      // Recorded against the answer, not the question: these are the passages
+      // *this* answer was written from, and regenerating replaces them rather
+      // than accumulating a second set.
+      recordSources(assistantMessage.id, cited)
     }
 
     if (!res.writableEnded) res.end()

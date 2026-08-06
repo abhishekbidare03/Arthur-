@@ -19,7 +19,7 @@ VRAM**, which drives most of the design decisions in this repo.
 | 5 | Voice in/out | ✅ Complete |
 | 6 | Packaging & launcher | ✅ Complete |
 | 7 | Polish | ✅ Complete |
-| 8 | RAG core (chunking, embeddings, hybrid retrieval) | 🟡 Core done, citation UI pending |
+| 8 | RAG core (chunking, embeddings, hybrid retrieval) | ✅ Complete |
 | 9–10 | Collections, advanced formats | ⬜ |
 
 Working chat with real streamed responses across three effort tiers, with durable local
@@ -57,9 +57,20 @@ real 49,633-character document with a fact placed 60% of the way through, agains
 tier's ~4,200-token attachment budget — the old truncation path (first ~16,700 characters) would
 never have reached it; retrieval did.
 
-This only covers the file(s) attached to the message being answered right now — older
-conversation turns still use the Phase 4 whole-turn-fits-or-drops rule. And there's no
-clickable citation UI yet, though the model does receive and can quote page numbers.
+**Every retrieved answer says what it was given.** Under the reply, a collapsed `8 sources ·
+report.pdf p. 4, 11–13` opens to the passages themselves, in full. Not a snippet with a link —
+there is nowhere to link *to*, since the source is a stored file rather than a rendered page, so
+showing the text is the whole affordance. They're stored against the answer, so reopening the
+conversation months later shows the same citations it showed when the answer first arrived.
+
+**Files stay useful for the rest of the conversation.** Ask about an attachment three turns
+later and Arthur retrieves from it against your new question, rather than dropping the turn
+because it no longer fits. Only the most recent oversized turn is compressed — anything older
+wouldn't have fit either, and spending the remaining budget there would starve the part of the
+conversation you're actually in.
+
+Large uploads show real progress (`indexing 32/49`), counted in chunks, because that's what the
+work is made of.
 
 Scanned PDFs with no text layer, and image-only decks, are refused by name rather than attached
 empty — OCR arrives in Phase 10. `.docx` and `.xlsx` name their phase; legacy `.doc`/`.ppt`/`.xls`

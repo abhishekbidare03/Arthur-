@@ -9,7 +9,7 @@
  */
 
 import type { Tier } from '../tiers.ts'
-import type { AttachmentOutcome, HistoryMessage } from '../context/buildContext.ts'
+import type { AttachmentOutcome, ContextSource, HistoryMessage } from '../context/buildContext.ts'
 
 export interface SendMessageInput {
   /** Each turn carries its own attachments, if any — see `HistoryMessage`. */
@@ -39,7 +39,7 @@ export type StreamEvent =
    * changes how the answer should be read, and the user should know that while
    * it streams rather than afterwards.
    */
-  | { type: 'context'; attachments: AttachmentOutcome[] }
+  | { type: 'context'; attachments: AttachmentOutcome[]; sources: ContextSource[] }
   /** A reasoning delta. Only the High tier emits these. */
   | { type: 'thinking'; delta: string }
   /** An answer delta. */

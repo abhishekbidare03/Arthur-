@@ -39,18 +39,22 @@ const check = (ok: boolean, message: string) => {
 
 /* -- Fixture: three pages, three unrelated topics, one with a rare exact term - */
 
+// Sized to overflow the *low* tier's attachment budget (~4,200 tokens, so
+// ~16,800 characters) several times over. This matters: at the original size
+// the whole file fit whole, retrieval never ran, and every assertion below
+// about retrieval was passing vacuously.
 const page1 =
-  'Zorblatt migration patterns follow the lunar cycle. '.repeat(1) +
+  'Zorblatt migration patterns follow the lunar cycle. ' +
   'Every spring, Zorblatts travel from the northern wetlands to the coastal breeding grounds, a journey of roughly four hundred kilometres. ' +
-  'Adult Zorblatts navigate by magnetic field sensitivity, a trait unique among wetland fauna in this region. '.repeat(20)
+  'Adult Zorblatts navigate by magnetic field sensitivity, a trait unique among wetland fauna in this region. '.repeat(240)
 
 const page2 =
   'Widget Corp quarterly revenue rose eight percent in Q2, driven by strong demand in the industrial fasteners division. ' +
-  'Operating margin held steady at nineteen percent despite input cost inflation. '.repeat(20)
+  'Operating margin held steady at nineteen percent despite input cost inflation. '.repeat(240)
 
 const page3 =
   'Customers requesting a refund must cite reference code QX-88214-ALPHA when contacting support. ' +
-  'The return policy allows thirty days from delivery, and QX-88214-ALPHA must appear on the shipping label for the refund to process automatically. '.repeat(15)
+  'The return policy allows thirty days from delivery, and QX-88214-ALPHA must appear on the shipping label for the refund to process automatically. '.repeat(180)
 
 const pages = [
   { no: 1, text: page1 },
@@ -132,21 +136,85 @@ const bigContext = await buildContext({
 })
 
 const outcome = bigContext.attachments[0]
+// Asserted outright rather than as "retrieved *or* full". The fixture is
+// deliberately several times the low tier's budget, so `full` here would mean
+// the budget is not being applied — and would make every check below vacuous,
+// which is exactly what the earlier, smaller fixture was quietly doing.
 check(
-  outcome?.state === 'retrieved' || outcome?.state === 'full',
-  `expected the document to fit whole or fall back to retrieval, got state ${outcome?.state}`,
+  outcome?.state === 'retrieved',
+  `an oversized indexed file must fall back to retrieval, got state ${outcome?.state}`,
 )
-if (outcome?.state === 'retrieved') {
-  check(
-    bigContext.messages[0]!.content.includes('QX-88214-ALPHA'),
-    'buildContext fell back to retrieval but the answer-relevant chunk did not make it into the prompt',
-  )
-  check(
-    bigContext.messages[0]!.content.includes('excerpts='),
-    'a retrieved attachment should be labelled as excerpts, not presented as the whole file',
-  )
-  check((outcome.chunksUsed ?? 0) > 0, 'a retrieved outcome should report how many chunks were used')
-}
+check(
+  bigContext.messages[0]!.content.includes('QX-88214-ALPHA'),
+  'buildContext fell back to retrieval but the answer-relevant chunk did not make it into the prompt',
+)
+check(
+  bigContext.messages[0]!.content.includes('excerpts='),
+  'a retrieved attachment should be labelled as excerpts, not presented as the whole file',
+)
+check((outcome?.chunksUsed ?? 0) > 0, 'a retrieved outcome should report how many chunks were used')
+
+/* -- Citations: every retrieved passage is reported, and is checkable -------- */
+
+check(
+  bigContext.sources.length > 0,
+  'a retrieved attachment produced no sources, so its citations would be empty',
+)
+check(
+  bigContext.sources.every((s) => s.chunkId && s.filename === row.filename),
+  'a source is missing the chunk id or filename that makes a citation checkable',
+)
+check(
+  bigContext.sources.some((s) => s.text.includes('QX-88214-ALPHA')),
+  'the passage that actually answers the question is not among the cited sources',
+)
+check(
+  // The prompt is assembled from these, so a source whose text is not in the
+  // prompt would be a citation for something the model never saw.
+  bigContext.sources.every((s) => bigContext.messages[0]!.content.includes(s.text)),
+  'a cited passage does not appear in the prompt — the citation would be a claim, not a record',
+)
+
+/* -- Older turns: retrieved, not dropped -------------------------------------- */
+// Through Phase 8's first cut an older turn that did not fit whole was dropped
+// outright, taking its files with it — so "what did that PDF say about X?" a few
+// turns later answered from nothing at all. The file here is attached ONLY to
+// the first turn, and the question is asked three turns later.
+
+const laterContext = await buildContext({
+  messages: [
+    {
+      role: 'user',
+      content: 'here is the policy document',
+      attachments: [{ id: row.id, filename: row.filename, text: fullText, indexed: true }],
+    },
+    { role: 'assistant', content: 'Noted.' },
+    { role: 'user', content: 'thanks' },
+    { role: 'assistant', content: 'No problem.' },
+    { role: 'user', content: 'what reference code do I need for a refund?' },
+  ],
+  tier: 'low',
+})
+
+const historyText = laterContext.messages.map((m) => m.content).join('\n')
+check(
+  historyText.includes('QX-88214-ALPHA'),
+  'the file from an earlier turn was dropped rather than retrieved from — a follow-up about it would answer from nothing',
+)
+check(
+  laterContext.sources.length > 0,
+  'passages retrieved from history are not reported as sources, so they could not be cited',
+)
+check(
+  // The newest turn has no attachment of its own, so anything cited here came
+  // from history — which is the behaviour being pinned.
+  laterContext.attachments.length === 0,
+  'the newest turn has no attachment, so it should report no attachment outcomes',
+)
+check(
+  historyText.includes('excerpts='),
+  'an older turn compressed by retrieval must still say it is excerpts, not the whole file',
+)
 
 /* -- An attachment that is NOT indexed still falls back to truncation --------- */
 

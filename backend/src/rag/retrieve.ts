@@ -17,11 +17,18 @@ import { embedQuery } from './embed.ts'
 import { estimateTokens } from '../prompt.ts'
 
 export interface RetrievedChunk {
+  /** `chunks.id`, so the passage the model was actually shown can be recorded
+   *  in `message_sources` and shown back to the reader as a citation. Without
+   *  it a citation could only ever be "somewhere in this file". */
+  chunkId: string
   documentId: string
   filename: string
   pageNo: number | null
   text: string
   tokenCount: number
+  /** Fused RRF score. Stored alongside the citation so the ordering a reader
+   *  sees is the ordering retrieval actually produced. */
+  score: number
 }
 
 /** How many candidates each retrieval mode contributes before fusion. Wider
@@ -66,22 +73,24 @@ export async function retrieveChunks(
   addRanked(vectorHits)
   addRanked(ftsHits)
 
-  const ranked = [...fused.entries()].sort((a, b) => b[1] - a[1]).map(([rowid]) => rowid)
-  const chunkMap = chunksByRowids(ranked)
+  const ranked = [...fused.entries()].sort((a, b) => b[1] - a[1])
+  const chunkMap = chunksByRowids(ranked.map(([rowid]) => rowid))
 
   const out: RetrievedChunk[] = []
   let used = 0
-  for (const rowid of ranked) {
+  for (const [rowid, score] of ranked) {
     const chunk = chunkMap.get(rowid)
     if (!chunk) continue
     const cost = chunk.tokenCount ?? estimateTokens(chunk.text)
     if (used + cost > tokenBudget) continue // a later, shorter chunk may still fit
     out.push({
+      chunkId: chunk.id,
       documentId: chunk.documentId,
       filename: chunk.filename,
       pageNo: chunk.pageNo,
       text: chunk.text,
       tokenCount: cost,
+      score,
     })
     used += cost
   }

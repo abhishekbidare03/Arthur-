@@ -34,7 +34,14 @@ const EMBED_BATCH = 32
  * back to truncation for any attachment that is not indexed, so this is a
  * genuine degradation, not a broken feature.
  */
-export async function ingestDocument(row: DocumentRow, pages: ExtractedPage[]): Promise<void> {
+export async function ingestDocument(
+  row: DocumentRow,
+  pages: ExtractedPage[],
+  /** Called once per embedding batch. Reported in chunks rather than bytes or
+   *  percent because chunks are what the work is actually made of — a 50-page
+   *  PDF is ~120 of them, and "84 of 120" is a claim that can be checked. */
+  onProgress?: (done: number, total: number) => void,
+): Promise<void> {
   if (chunkCountForDocument(row.id) > 0) {
     // Already chunked — a dedup hit, or a re-attach of a file indexed earlier.
     // The status is re-asserted rather than assumed: a row can carry chunks and
@@ -52,6 +59,7 @@ export async function ingestDocument(row: DocumentRow, pages: ExtractedPage[]): 
   }
 
   try {
+    onProgress?.(0, chunks.length)
     for (let i = 0; i < chunks.length; i += EMBED_BATCH) {
       const batch = chunks.slice(i, i + EMBED_BATCH)
       const vectors = await embedTexts(batch.map((c) => c.text))
@@ -60,6 +68,7 @@ export async function ingestDocument(row: DocumentRow, pages: ExtractedPage[]): 
         insertChunkVector(rowid, vectors[j]!)
         insertChunkText(rowid, chunk.text)
       })
+      onProgress?.(Math.min(i + EMBED_BATCH, chunks.length), chunks.length)
     }
     setDocumentStatus(row.id, 'indexed')
   } catch (error) {

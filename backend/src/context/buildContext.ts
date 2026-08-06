@@ -18,7 +18,7 @@
 
 import { estimateTokens, systemPrompt } from '../prompt.ts'
 import { tierConfig, type Tier } from '../tiers.ts'
-import { retrieveChunks } from '../rag/retrieve.ts'
+import { retrieveChunks, type RetrievedChunk } from '../rag/retrieve.ts'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -76,6 +76,17 @@ export interface AttachmentOutcome {
   chunksUsed?: number
 }
 
+/** One passage the model was actually shown, for the citation strip and for
+ *  `message_sources`. */
+export interface ContextSource {
+  chunkId: string
+  documentId: string
+  filename: string
+  pageNo: number | null
+  text: string
+  score: number
+}
+
 export interface BuiltContext {
   system: string
   messages: ChatMessage[]
@@ -85,6 +96,15 @@ export interface BuiltContext {
   historyBudget: number
   /** Per-file result for the turn just sent, so the UI can warn rather than silently send less. */
   attachments: AttachmentOutcome[]
+  /**
+   * Every retrieved passage that reached the model, newest turn and history
+   * alike, best first.
+   *
+   * This is the difference between "the model mentioned page 4" and "here is
+   * the page-4 text it was given". A citation that cannot be checked is a
+   * claim, not a citation.
+   */
+  sources: ContextSource[]
 }
 
 /**
@@ -115,6 +135,15 @@ const MIN_USEFUL_CHARS = 400
 
 /** ~30 tokens covers the wrapper tag and the truncation note. */
 const WRAP_OVERHEAD = 30
+
+/**
+ * Below this, retrieving into an older turn is not worth the embedding call.
+ *
+ * One useful passage plus its wrapper is already most of this; less than that
+ * buys a fragment too small to answer from, at the cost of a chunk of budget
+ * the newest turn could have used.
+ */
+const HISTORY_RETRIEVAL_FLOOR = 200
 
 /**
  * Wraps file text so the model can tell document from question.
@@ -171,14 +200,25 @@ function inline(message: HistoryMessage): ChatMessage {
 async function fitNewest(
   message: HistoryMessage,
   working: number,
-): Promise<{ content: string; cost: number; outcomes: AttachmentOutcome[] }> {
+): Promise<{
+  content: string
+  cost: number
+  outcomes: AttachmentOutcome[]
+  sources: ContextSource[]
+}> {
   const attachments = message.attachments ?? []
   if (attachments.length === 0) {
-    return { content: message.content, cost: estimateTokens(message.content) + 4, outcomes: [] }
+    return {
+      content: message.content,
+      cost: estimateTokens(message.content) + 4,
+      outcomes: [],
+      sources: [],
+    }
   }
 
   const budget = Math.floor(working * ATTACHMENT_SHARE)
   const outcomes: AttachmentOutcome[] = []
+  const sources: ContextSource[] = []
   const blocks: string[] = []
   let used = 0
 
@@ -208,6 +248,7 @@ async function fitNewest(
       if (chunks.length > 0) {
         blocks.push(wrapRetrieved(file.filename, chunks))
         used += chunks.reduce((sum, c) => sum + c.tokenCount, 0) + WRAP_OVERHEAD
+        sources.push(...chunks.map(toSource))
         outcomes.push({
           id: file.id,
           filename: file.filename,
@@ -251,7 +292,20 @@ async function fitNewest(
   }
 
   const content = blocks.length > 0 ? `${blocks.join('\n\n')}\n\n${message.content}` : message.content
-  return { content, cost: estimateTokens(content) + 4, outcomes }
+  return { content, cost: estimateTokens(content) + 4, outcomes, sources }
+}
+
+/** Drops the token count, which is an assembly detail, and keeps what a reader
+ *  needs to check the claim. */
+function toSource(chunk: RetrievedChunk): ContextSource {
+  return {
+    chunkId: chunk.chunkId,
+    documentId: chunk.documentId,
+    filename: chunk.filename,
+    pageNo: chunk.pageNo,
+    text: chunk.text,
+    score: chunk.score,
+  }
 }
 
 export async function buildContext({ messages, tier }: BuildContextInput): Promise<BuiltContext> {
@@ -263,31 +317,87 @@ export async function buildContext({ messages, tier }: BuildContextInput): Promi
   const working = numCtx - OUTPUT_RESERVE[tier] - estimateTokens(system)
 
   if (messages.length === 0) {
-    return { system, messages: [], droppedMessages: 0, historyBudget: working, attachments: [] }
+    return {
+      system,
+      messages: [],
+      droppedMessages: 0,
+      historyBudget: working,
+      attachments: [],
+      sources: [],
+    }
   }
 
   const newest = messages[messages.length - 1]!
   const older = messages.slice(0, -1)
 
-  const { content: newestContent, cost: newestCost, outcomes } = await fitNewest(newest, working)
+  const {
+    content: newestContent,
+    cost: newestCost,
+    outcomes,
+    sources: newestSources,
+  } = await fitNewest(newest, working)
 
   /* --------------------------------------------------------------- history -- */
 
   // Whatever the newest turn leaves goes to earlier history, richest (most
-  // recent) turn first. Each older turn's attachments travel with it, in
-  // full — they either fit as part of that turn or the turn is dropped
-  // whole; a truncation warning would have nowhere to display once a turn is
-  // no longer the one being answered.
+  // recent) turn first.
   const historyBudget = Math.max(0, working - newestCost)
   const kept: ChatMessage[] = []
+  const historySources: ContextSource[] = []
   let used = 0
 
   for (let i = older.length - 1; i >= 0; i--) {
     const message = older[i]!
     const cost = fullCost(message)
-    if (used + cost > historyBudget) break
-    kept.unshift(inline(message))
-    used += cost
+
+    if (used + cost <= historyBudget) {
+      kept.unshift(inline(message))
+      used += cost
+      continue
+    }
+
+    // The turn does not fit whole. Through Phase 8's first cut this was the end
+    // of it — the turn was dropped, and with it every file attached to it, so
+    // "what did that PDF say about X?" three turns later answered from nothing.
+    //
+    // An indexed file can be retrieved from instead, and the query to retrieve
+    // *for* is the newest question: that is what the context is being assembled
+    // to answer. Note this deliberately re-reads a file across turns, which the
+    // whole-file path must never do — but a retrieved passage is scoped to the
+    // question being asked, so it cannot reintroduce the Phase 4 mix-up where
+    // two whole files sat next to one ambiguous "this".
+    const indexed = (message.attachments ?? []).filter((f) => f.indexed)
+    const remaining = historyBudget - used
+
+    if (indexed.length === 0 || remaining <= HISTORY_RETRIEVAL_FLOOR) break
+
+    const own = estimateTokens(message.content) + 4
+    const forChunks = remaining - own - WRAP_OVERHEAD * indexed.length
+    if (forChunks <= 0) break
+
+    const chunks = await retrieveChunks(
+      indexed.map((f) => f.id),
+      newest.content,
+      forChunks,
+    )
+    if (chunks.length === 0) break
+
+    // Grouped by file so each block still names one document — a passage
+    // attributed to the wrong file is worse than no attribution.
+    const blocks: string[] = []
+    for (const file of indexed) {
+      const mine = chunks.filter((c) => c.documentId === file.id)
+      if (mine.length > 0) blocks.push(wrapRetrieved(file.filename, mine))
+    }
+
+    kept.unshift({ role: message.role, content: `${blocks.join('\n\n')}\n\n${message.content}` })
+    historySources.push(...chunks.map(toSource))
+    used += own + chunks.reduce((sum, c) => sum + c.tokenCount, 0) + WRAP_OVERHEAD * blocks.length
+
+    // Stop here regardless. Anything older than a turn that had to be
+    // compressed is not going to fit either, and continuing would spend the
+    // remaining budget on the least relevant end of the conversation.
+    break
   }
 
   return {
@@ -296,5 +406,8 @@ export async function buildContext({ messages, tier }: BuildContextInput): Promi
     droppedMessages: older.length - kept.length,
     historyBudget,
     attachments: outcomes,
+    // Newest first: these are ranked within each turn, and the turn being
+    // answered is the one whose passages a reader will want at the top.
+    sources: [...newestSources, ...historySources],
   }
 }

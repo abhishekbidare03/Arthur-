@@ -138,9 +138,11 @@ export async function* sendMessage(
   const context = await buildContext({ messages: input.messages, tier: input.tier })
 
   // Reported before the request goes out, so a truncated or dropped file is
-  // visible while the answer streams rather than only after it finishes.
-  if (context.attachments.length > 0) {
-    yield { type: 'context', attachments: context.attachments }
+  // visible while the answer streams rather than only after it finishes, and
+  // so the citations are on screen with the answer rather than arriving after
+  // it has already been read.
+  if (context.attachments.length > 0 || context.sources.length > 0) {
+    yield { type: 'context', attachments: context.attachments, sources: context.sources }
   }
 
   const startedAt = performance.now()

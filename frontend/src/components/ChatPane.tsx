@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { Message, Tier } from '../types'
 import { tierInfo } from '../types'
 import AttachmentChip from './AttachmentChip'
+import Citations from './Citations'
 import { AlertIcon } from './icons'
 import Markdown from './Markdown'
 import MessageMeta from './MessageMeta'
@@ -159,6 +160,13 @@ export default function ChatPane({
                   <Markdown content={m.content} streaming={isStreaming} />
                   {isStreaming && <span className="caret" aria-hidden="true" />}
                 </div>
+              )}
+
+              {/* Under the answer, above the actions: the passages it was
+                  given. Only ever present when retrieval chose what the model
+                  saw, which is exactly when an answer is least verifiable. */}
+              {m.sources && m.sources.length > 0 && !isStreaming && (
+                <Citations sources={m.sources} />
               )}
 
               {m.stopped && (

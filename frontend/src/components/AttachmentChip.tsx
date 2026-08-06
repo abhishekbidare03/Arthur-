@@ -29,7 +29,13 @@ export default function AttachmentChip({ attachment, onRemove }: AttachmentChipP
 
       <span className="chip-meta">
         {attachment.uploading
-          ? 'reading…'
+          ? // A large PDF spends most of its wait embedding, not reading, and
+            // saying "reading…" for eight seconds of that is a small lie that
+            // makes a working upload look stuck. Counted in chunks because
+            // that is what the work is made of.
+            attachment.indexing && attachment.indexing.total > 0
+            ? `indexing ${attachment.indexing.done}/${attachment.indexing.total}…`
+            : 'reading…'
           : failed
             ? 'not attached'
             : // Token cost matters more than file size here: it is what decides

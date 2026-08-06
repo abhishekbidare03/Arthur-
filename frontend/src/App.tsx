@@ -213,7 +213,16 @@ export default function App() {
       chosen.map(async (file, i) => {
         const placeholderId = placeholders[i]!.id
         try {
-          const attachment = await uploadDocument(file, activeId)
+          const attachment = await uploadDocument(file, activeId, (stage) => {
+            if (stage.stage !== 'indexing') return
+            setPending((prev) =>
+              prev.map((a) =>
+                a.id === placeholderId
+                  ? { ...a, indexing: { done: stage.done, total: stage.total } }
+                  : a,
+              ),
+            )
+          })
           setPending((prev) => prev.map((a) => (a.id === placeholderId ? attachment : a)))
         } catch (error) {
           // The chip stays, showing why. A rejected file that simply vanished
@@ -425,10 +434,18 @@ export default function App() {
           setStreamingId(event.assistantMessageId)
         } else if (event.type === 'context') {
           const outcomes = event.attachments
+          const cited = event.sources ?? []
           setMessagesByConversation((prev) => ({
             ...prev,
             [key]: (prev[key] ?? []).map((m) =>
-              isUserTarget(m) ? { ...m, attachmentOutcomes: outcomes } : m,
+              // The truncation warning belongs on the question, next to the
+              // file chips it is about; the citations belong on the answer,
+              // which is the thing they support.
+              isUserTarget(m)
+                ? { ...m, attachmentOutcomes: outcomes }
+                : isTarget(m)
+                  ? { ...m, sources: cited }
+                  : m,
             ),
           }))
         } else if (event.type === 'content') {

@@ -83,6 +83,9 @@ export interface Attachment {
   estimatedTokens?: number
   /** Set while the upload is in flight, so the chip can show progress. */
   uploading?: boolean
+  /** How far indexing has got, in chunks. Present only while embedding — a
+   *  small file finishes before this is ever rendered, which is the intent. */
+  indexing?: { done: number; total: number }
   /** Set when the upload was refused — e.g. a PDF, or a binary file. */
   error?: string
 }
@@ -105,11 +108,30 @@ export interface AttachmentOutcome {
   chunksUsed?: number
 }
 
+/**
+ * One passage retrieval put in front of the model.
+ *
+ * The text is carried, not just a reference, because there is nowhere to link
+ * to — the source document is a stored blob, not a rendered page — so showing
+ * the passage *is* the citation.
+ */
+export interface Source {
+  chunkId: string
+  documentId: string
+  filename: string
+  pageNo: number | null
+  text: string
+  score: number
+}
+
 export interface Message {
   id: string
   conversationId: string
   role: Role
   content: string
+  /** Passages this answer was given. Assistant messages only, and only when a
+   *  file was too large to send whole. */
+  sources?: Source[]
   /** Files sent with this message. User messages only. */
   attachments?: Attachment[]
   /** How much of each attachment actually reached the model. */

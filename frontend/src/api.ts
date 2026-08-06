@@ -5,7 +5,7 @@
  * request is a POST with a JSON body and `EventSource` can only issue GETs.
  */
 
-import type { Attachment, AttachmentOutcome, Conversation, Message, Tier } from './types'
+import type { Attachment, AttachmentOutcome, Conversation, Message, Source, Tier } from './types'
 
 export interface GenerationStats {
   model: string
@@ -43,7 +43,7 @@ export type ChatEvent =
       createdAt: string
     }
   /** What context assembly did with the attachments. Arrives before any token. */
-  | { type: 'context'; attachments: AttachmentOutcome[] }
+  | { type: 'context'; attachments: AttachmentOutcome[]; sources: Source[] }
   | { type: 'thinking'; delta: string }
   | { type: 'content'; delta: string }
   | { type: 'done'; stats: GenerationStats }
@@ -197,9 +197,18 @@ export class UploadError extends Error {
  * the bytes stay untouched for the PDFs Phase 8 will accept. The name travels
  * in a header — percent-encoded, since headers are ASCII-only.
  */
+export type UploadStage =
+  | { stage: 'reading' }
+  | { stage: 'indexing'; done: number; total: number }
+  | { stage: 'done'; document: Attachment }
+  | { stage: 'error'; error?: string }
+
 export async function uploadDocument(
   file: File,
   conversationId: string | null,
+  /** Called as the backend works, so a large PDF shows progress rather than a
+   *  spinner that looks identical whether it is embedding 120 chunks or hung. */
+  onProgress?: (stage: UploadStage) => void,
   signal?: AbortSignal,
 ): Promise<Attachment> {
   const query = conversationId ? `?conversationId=${encodeURIComponent(conversationId)}` : ''
@@ -209,17 +218,40 @@ export async function uploadDocument(
     headers: {
       'Content-Type': file.type || 'application/octet-stream',
       'X-Arthur-Filename': encodeURIComponent(file.name),
+      // Asking for the stream is what turns on progress reporting. Without it
+      // the backend answers with one JSON response, which is still correct.
+      Accept: 'text/event-stream',
     },
     body: file,
     signal,
   })
 
+  // A refusal that happens before the stream opens is still a plain HTTP
+  // status, and carries the extractor's own explanation.
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string }
     throw new UploadError(body.error ?? `Upload failed (HTTP ${res.status}).`, res.status)
   }
 
-  return (await res.json()) as Attachment
+  // Older behaviour, and any client that did not ask for the stream.
+  if (!res.headers.get('Content-Type')?.includes('text/event-stream') || !res.body) {
+    return (await res.json()) as Attachment
+  }
+
+  let result: Attachment | undefined
+  for await (const event of readSse<UploadStage>(res.body, signal ?? new AbortController().signal)) {
+    onProgress?.(event)
+    if (event.stage === 'done') result = event.document
+    // Extraction can fail *after* the stream has opened, at which point there
+    // is no status code left to send — so the failure arrives as an event and
+    // is turned back into the same error the non-streaming path throws.
+    if (event.stage === 'error') {
+      throw new UploadError(event.error ?? 'The file could not be read.', 500)
+    }
+  }
+
+  if (!result) throw new UploadError('The upload ended without a result.', 500)
+  return result
 }
 
 /* ------------------------------------------------------------------ voice -- */
