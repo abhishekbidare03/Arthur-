@@ -83,9 +83,14 @@ export interface Attachment {
   estimatedTokens?: number
   /** Set while the upload is in flight, so the chip can show progress. */
   uploading?: boolean
-  /** How far indexing has got, in chunks. Present only while embedding — a
-   *  small file finishes before this is ever rendered, which is the intent. */
-  indexing?: { done: number; total: number }
+  /**
+   * How far the slow part has got.
+   *
+   * Chunks while embedding, pages while OCR is running on a scan (`reading`).
+   * Present only while one of those is happening — a small text file finishes
+   * before this is ever rendered, which is the intent.
+   */
+  indexing?: { done: number; total: number; reading?: boolean }
   /** Set when the upload was refused — e.g. a PDF, or a binary file. */
   error?: string
 }

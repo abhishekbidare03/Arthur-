@@ -226,13 +226,17 @@ export default function App() {
         const placeholderId = placeholders[i]!.id
         try {
           const attachment = await uploadDocument(file, activeId, (stage) => {
-            if (stage.stage !== 'indexing') return
+            // Both slow stages share the chip's progress readout: OCR counts
+            // pages, indexing counts chunks, and they never overlap.
+            const progress =
+              stage.stage === 'indexing'
+                ? { done: stage.done, total: stage.total }
+                : stage.stage === 'reading' && stage.total
+                  ? { done: stage.page ?? 0, total: stage.total, reading: true as const }
+                  : undefined
+            if (!progress) return
             setPending((prev) =>
-              prev.map((a) =>
-                a.id === placeholderId
-                  ? { ...a, indexing: { done: stage.done, total: stage.total } }
-                  : a,
-              ),
+              prev.map((a) => (a.id === placeholderId ? { ...a, indexing: progress } : a)),
             )
           })
           setPending((prev) => prev.map((a) => (a.id === placeholderId ? attachment : a)))

@@ -21,7 +21,7 @@ VRAM**, which drives most of the design decisions in this repo.
 | 7 | Polish | ✅ Complete |
 | 8 | RAG core (chunking, embeddings, hybrid retrieval) | ✅ Complete |
 | 9 | Collections / knowledge base | ✅ Complete |
-| 10 | Advanced formats | ⬜ |
+| 10 | Advanced formats (OCR, Office, EPUB) | ✅ Complete |
 
 Working chat with real streamed responses across three effort tiers, with durable local
 history in SQLite. Conversations survive restarts; rename and delete from the sidebar.
@@ -36,8 +36,24 @@ because tokens are what decide whether it fits.
 | Format | Read as |
 |---|---|
 | `.pdf` | Per-page text via `pdfjs-dist`, fonts resolved locally — no CDN, no network |
-| `.pptx` | Per-slide text with speaker notes, by reading the file's own XML |
+| `.pdf` (scanned) | OCR'd automatically, page by page, only where there's no text layer |
+| `.docx` | Paragraphs and **tables**, by reading the file's own XML |
+| `.xlsx` | One page per sheet, named as it is in Excel, cells kept in their columns |
+| `.pptx` | Per-slide text with speaker notes |
+| `.html` | Prose, with scripts and styles removed and tables kept |
+| `.epub` | Chapter by chapter, in the book's own spine order |
 | ~60 text/source types | Directly, with binary files refused rather than mangled |
+
+**Tables survive as tables.** In Word, Excel and HTML alike, a table comes out tab-separated
+rather than flattened into a run of words — a spreadsheet read as prose looks like data while
+being unanswerable. Empty cells are preserved too, because dropping them shifts every value left
+of a gap into the wrong column.
+
+**Scanned PDFs are read, not refused.** Any page with no text layer is OCR'd automatically —
+detection is per page, so a report with three scanned appendices OCRs only those three. This
+needs no renderer and no native modules: a scanned page already *is* an image, so Arthur pulls
+it straight out of the PDF and hands it to `tesseract.js`. Slow — seconds per page on CPU — so
+the chip counts pages while it works, and it stops at 40 pages and says so.
 
 Context is 8192 tokens, so a newly-attached file takes at most 60% of the working budget and is
 truncated rather than silently dropped — both the model and the message are told what was cut.
@@ -73,9 +89,10 @@ conversation you're actually in.
 Large uploads show real progress (`indexing 32/49`), counted in chunks, because that's what the
 work is made of.
 
-Scanned PDFs with no text layer, and image-only decks, are refused by name rather than attached
-empty — OCR arrives in Phase 10. `.docx` and `.xlsx` name their phase; legacy `.doc`/`.ppt`/`.xls`
-say to re-save instead.
+Refusals stay specific. An image-only deck says its slides are pictures; a PDF that is neither
+text nor a readable scan (a vector drawing, a form) says exactly that rather than promising a
+feature that already exists; legacy `.doc`/`.ppt`/`.xls` say to re-save, because they share
+nothing with their modern namesakes and no amount of waiting will help.
 
 ## Collections
 
@@ -159,10 +176,17 @@ separate collapsible panel.
 ## Stack
 
 React 19 · TypeScript · Vite 7 · Tailwind v4 · Express 5 · Ollama · SQLite · sqlite-vec ·
-pdfjs-dist · transformers.js (bge-small-en-v1.5 embeddings and whisper-tiny.en speech, both
-CPU-only)
+pdfjs-dist · fflate · tesseract.js · transformers.js (bge-small-en-v1.5 embeddings and
+whisper-tiny.en speech, both CPU-only)
 
 No Rust, no MSVC, no Python — every dependency installs from npm with prebuilt binaries.
+
+Several things that would normally be dependencies are not, each for a specific reason rather
+than as a principle. Office and EPUB parsing is `fflate` plus a scan of the elements that carry
+text, because those files are ZIPs of a narrow, machine-generated schema. HTML uses no DOM
+library because what's needed is the opposite of a DOM — everything that makes it a document
+gets thrown away. And OCR needs a PNG encoder, which is 60 lines over `node:zlib`, rather than
+`canvas` — a native module needing MSVC, which would have broken the line above.
 
 ## Installing it
 
@@ -260,6 +284,14 @@ key — so deleting a conversation cascaded away its chunks while both indexes k
 SQLite then reused those rowids for the next document and failed on a UNIQUE constraint. The test
 ingests, cascade-deletes, asserts the stranding actually happens, then re-ingests onto the freed
 rowids.
+
+`backend/formats.test.mts` builds a `.docx`, `.xlsx`, `.html`, `.epub` and a scanned PDF in
+memory and checks the things that fail *silently*: that a table keeps its columns, that an
+Excel row with a gap doesn't shift its values one column left, that `<script>` bodies don't
+survive tag-stripping as prose, that an EPUB reads in spine order rather than filename order
+(chapter 10 before chapter 2), and that a scan actually OCRs. The OCR fixture renders real text
+through System.Drawing — a hand-drawn bitmap font was tried first and tesseract read "ROTATION"
+as "FOTHTION", which is a fair verdict on the fixture rather than on the pipeline.
 
 `backend/collections.test.mts` covers folder ingest with real files: that the walk skips
 `node_modules` and binaries, that a re-scan recognises unchanged files instead of re-embedding

@@ -312,7 +312,8 @@ export class UploadError extends Error {
  * in a header — percent-encoded, since headers are ASCII-only.
  */
 export type UploadStage =
-  | { stage: 'reading' }
+  /** `page`/`total` are present only while OCR is running on a scanned PDF. */
+  | { stage: 'reading'; page?: number; total?: number }
   | { stage: 'indexing'; done: number; total: number }
   | { stage: 'done'; document: Attachment }
   | { stage: 'error'; error?: string }

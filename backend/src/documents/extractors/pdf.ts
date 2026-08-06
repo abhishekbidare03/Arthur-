@@ -13,7 +13,13 @@
 
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import { UnreadableFileError, type Extracted, type ExtractedPage, type Extractor } from './types.ts'
+import {
+  UnreadableFileError,
+  type Extracted,
+  type ExtractedPage,
+  type ExtractProgress,
+  type Extractor,
+} from './types.ts'
 
 /**
  * Local paths to the font and character-map data pdf.js needs.
@@ -92,7 +98,11 @@ function itemsToText(items: TextItem[]): string {
 export const pdfExtractor: Extractor = {
   extensions: ['.pdf'],
 
-  async extract(bytes: Buffer, filename: string): Promise<Extracted> {
+  async extract(
+    bytes: Buffer,
+    filename: string,
+    onProgress?: (progress: ExtractProgress) => void,
+  ): Promise<Extracted> {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
 
     // `destroy()` lives on the loading task, not on the document — the document
@@ -128,6 +138,10 @@ export const pdfExtractor: Extractor = {
 
     const pages: ExtractedPage[] = []
     const pageCount = doc.numPages
+    let ocrPageCount = 0
+    let ocrSkipped: number[] = []
+    let ocrCapped = false
+
     try {
       for (let no = 1; no <= pageCount; no++) {
         const page = await doc.getPage(no)
@@ -136,6 +150,29 @@ export const pdfExtractor: Extractor = {
         // Release the page's resources; a large PDF otherwise holds every page
         // in memory at once.
         page.cleanup()
+      }
+
+      // Pages with no text layer are scans. They are routed to OCR
+      // automatically rather than behind a setting: a user attaching a scanned
+      // PDF wants it read, and asking them to first diagnose *why* it came
+      // back empty is asking them to know something about PDF internals.
+      //
+      // Only the empty pages, never the whole document — a page that already
+      // has text has better text than tesseract would guess at, and OCR costs
+      // seconds per page.
+      const empty = pages.filter((p) => p.text.length === 0).map((p) => p.no)
+
+      if (empty.length > 0) {
+        const { ocrPdfPages } = await import('../ocr.ts')
+        const result = await ocrPdfPages(doc, pdfjs.OPS, empty, onProgress)
+
+        for (const recognised of result.pages) {
+          const target = pages.find((p) => p.no === recognised.no)
+          if (target) target.text = recognised.text
+        }
+        ocrPageCount = result.pages.length
+        ocrSkipped = result.skipped
+        ocrCapped = result.capped
       }
     } finally {
       // Tears down the worker too. Without this the process keeps a worker
@@ -148,12 +185,13 @@ export const pdfExtractor: Extractor = {
       .map((p) => p.text)
       .join('\n\n')
 
-    // A PDF of scanned images parses perfectly and yields nothing. Saying so is
-    // far better than attaching an empty file and letting the model invent an
-    // answer about it. OCR is Phase 10.
+    // Nothing extractable and nothing OCR-able. Most likely a PDF whose pages
+    // are vector drawings with the text *drawn* rather than photographed —
+    // there is no single image to read, so the honest answer is that this one
+    // cannot be read at all.
     if (text.trim().length === 0) {
       throw new UnreadableFileError(
-        `${filename} has no extractable text — it is probably a scan. Reading scanned PDFs needs OCR, which arrives in Phase 10.`,
+        `${filename} has no readable text. Its pages are neither text nor scanned images that OCR could read — if it is a vector drawing or a form, try exporting it as text or as an image PDF.`,
       )
     }
 
@@ -162,8 +200,14 @@ export const pdfExtractor: Extractor = {
       pages,
       meta: {
         pageCount,
-        /** Pages that yielded nothing — a hint that part of it is scanned. */
+        /** Pages that yielded nothing even after OCR. */
         emptyPages: pages.filter((p) => p.text.length === 0).map((p) => p.no),
+        // Recorded because OCR text is materially less reliable than a text
+        // layer, and anything reasoning about confidence downstream should be
+        // able to tell which pages came from which.
+        ocrPages: ocrPageCount,
+        ocrSkipped,
+        ocrCapped,
       },
     }
   },

@@ -133,15 +133,44 @@ check(notAZip instanceof UnreadableFileError, 'a non-zip .pptx was not refused')
 const notAPdf = await refusal(Buffer.from('nowhere near a PDF'), 'broken.pdf')
 check(notAPdf instanceof UnreadableFileError, 'a non-PDF .pdf was not refused')
 
-// A PDF that parses but has no text layer is a scan. It must be named as such,
-// not attached as an empty document the model then invents an answer about.
+// A PDF with no text layer and no images either — neither extractable nor
+// OCR-able. Before Phase 10 this said "OCR arrives in Phase 10"; now OCR does
+// run, finds no image to read, and the message has to be honest about the fact
+// that this particular file cannot be read at all rather than promising a
+// feature that already exists.
 const emptyPdf = await refusal(buildPdf(['']), 'scan.pdf')
 check(emptyPdf instanceof UnreadableFileError, 'a text-free PDF was not refused')
-check(/OCR/i.test(emptyPdf?.message ?? ''), `text-free PDF should mention OCR: ${emptyPdf?.message}`)
+check(
+  /no readable text/i.test(emptyPdf?.message ?? '') && !/Phase 10/.test(emptyPdf?.message ?? ''),
+  `a PDF with neither text nor images should say so plainly, not defer to a shipped phase: ${emptyPdf?.message}`,
+)
 
-const docx = await refusal(Buffer.from('x'), 'notes.docx')
-check(docx instanceof UnsupportedFileError, '.docx was not refused')
-check(/Phase 8/.test(docx?.message ?? ''), `.docx should name its phase: ${docx?.message}`)
+// `.docx` was refused through Phase 9 with "arrives in Phase 8". It works now,
+// so the assertion is inverted: the refusal path must NOT fire. Kept rather
+// than deleted, because "a format quietly stopped working" is exactly the
+// regression this file exists to catch.
+const docxRefusal = await refusal(Buffer.from('x'), 'notes.docx')
+check(
+  !(docxRefusal instanceof UnsupportedFileError),
+  '.docx is refused as unsupported again — the extractor is no longer registered',
+)
+check(
+  docxRefusal instanceof UnreadableFileError,
+  'a .docx that is not a zip should be refused as unreadable, naming the likely cause',
+)
+check(
+  /zip archive/i.test(docxRefusal?.message ?? ''),
+  `a corrupt .docx should say what it expected: ${docxRefusal?.message}`,
+)
+
+// Legacy binary formats are still refused, and still say to re-save rather
+// than to wait — they are not a matter of scheduling.
+const legacyDoc = await refusal(Buffer.from('x'), 'notes.doc')
+check(legacyDoc instanceof UnsupportedFileError, 'legacy .doc was not refused')
+check(
+  /re-save/i.test(legacyDoc?.message ?? ''),
+  `legacy .doc should say what to do: ${legacyDoc?.message}`,
+)
 
 /* -- Report ----------------------------------------------------------------- */
 

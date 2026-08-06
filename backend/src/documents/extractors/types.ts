@@ -26,11 +26,27 @@ export interface Extracted {
   meta: Record<string, unknown>
 }
 
+/**
+ * Progress from an extractor slow enough to need reporting.
+ *
+ * Only OCR is: every other format here parses in milliseconds, while tesseract
+ * takes seconds *per page*. Optional on the interface rather than required, so
+ * the fast extractors are not made to pretend they have stages.
+ */
+export interface ExtractProgress {
+  page: number
+  total: number
+}
+
 export interface Extractor {
   /** Lower-case extensions including the dot, e.g. `.md`. */
   extensions: readonly string[]
   /** Async because Phase 8's parsers are; the text one resolves immediately. */
-  extract(bytes: Buffer, filename: string): Promise<Extracted>
+  extract(
+    bytes: Buffer,
+    filename: string,
+    onProgress?: (progress: ExtractProgress) => void,
+  ): Promise<Extracted>
 }
 
 /**

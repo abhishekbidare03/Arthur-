@@ -34,7 +34,12 @@ export default function AttachmentChip({ attachment, onRemove }: AttachmentChipP
             // makes a working upload look stuck. Counted in chunks because
             // that is what the work is made of.
             attachment.indexing && attachment.indexing.total > 0
-            ? `indexing ${attachment.indexing.done}/${attachment.indexing.total}…`
+            ? // Named separately because they mean different things to the
+              // person waiting: OCR is minutes on a long scan, indexing is
+              // seconds, and one of them justifies going to make tea.
+              `${attachment.indexing.reading ? 'reading page' : 'indexing'} ${
+                attachment.indexing.done
+              }/${attachment.indexing.total}…`
             : 'reading…'
           : failed
             ? 'not attached'

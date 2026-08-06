@@ -8,7 +8,7 @@
     "start": "tsx src/server.ts",
     "serve": "tsx src/server.ts --app",
     "typecheck": "tsc --noEmit",
-    "test": "tsx extractors.test.mts && tsx buildContext.test.mts && tsx rag.test.mts && tsx index-integrity.test.mts && tsx collections.test.mts && tsx voice.test.mts"
+    "test": "tsx extractors.test.mts && tsx formats.test.mts && tsx buildContext.test.mts && tsx rag.test.mts && tsx index-integrity.test.mts && tsx collections.test.mts && tsx voice.test.mts"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
@@ -17,7 +17,8 @@
     "express": "^5.1.0",
     "fflate": "^0.8.3",
     "pdfjs-dist": "^6.2.108",
-    "sqlite-vec": "^0.1.9"
+    "sqlite-vec": "^0.1.9",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

@@ -56,12 +56,15 @@ export async function storeUpload(input: {
    * is duplicated, and a row is a few hundred bytes.
    */
   reuseExisting?: boolean
+  /** Reported by the OCR path only; every other format parses too fast to
+   *  bother. See `ExtractProgress`. */
+  onProgress?: (progress: { page: number; total: number }) => void
 }): Promise<StoredDocument> {
   const sha256 = hash(input.bytes)
 
   // Extract before writing anything. An unsupported or unreadable file should
   // leave no trace on disk and no row behind.
-  const extracted = await extract(input.bytes, input.filename)
+  const extracted = await extract(input.bytes, input.filename, input.onProgress)
 
   const existing = input.reuseExisting === false ? undefined : findExtractedByHash(sha256)
   if (existing) {

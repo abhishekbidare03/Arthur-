@@ -34,6 +34,7 @@ import { ingestFolder } from './rag/folder.ts'
 import { retrieveChunks } from './rag/retrieve.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
 import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
+import { releaseOcr } from './documents/ocr.ts'
 import { ingestDocument, reindexDocument, reindexPending } from './rag/ingest.ts'
 import { recordSources, sourcesForConversation } from './db/sources.ts'
 import { warmEmbeddings } from './rag/embed.ts'
@@ -497,6 +498,9 @@ app.post(
         bytes,
         mime: req.get('Content-Type') ?? undefined,
         conversationId,
+        // A scanned PDF spends most of its wait in OCR, seconds per page. Its
+        // own stage, because "reading" for three minutes reads as a hang.
+        onProgress: ({ page, total }) => emit({ stage: 'reading', page, total }),
       })
 
       // Chunk and embed now, not lazily on first retrieval — the very next
@@ -969,6 +973,11 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     server.close()
     closeDb()
-    process.exit(0)
+    // The OCR worker holds a WASM heap and a thread; without this the process
+    // can linger after the port is released, which the launcher's "already
+    // running?" check would then read as a live copy.
+    void releaseOcr().finally(() => process.exit(0))
+    // A hard floor, so a wedged worker cannot keep the process alive.
+    setTimeout(() => process.exit(0), 2_000).unref()
   })
 }

@@ -7,14 +7,39 @@
  */
 
 import { extname } from 'node:path'
+import { docxExtractor } from './docx.ts'
+import { epubExtractor } from './epub.ts'
+import { htmlExtractor } from './html.ts'
 import { pdfExtractor } from './pdf.ts'
 import { pptxExtractor } from './pptx.ts'
 import { textExtractor } from './text.ts'
-import { UnsupportedFileError, type Extracted, type Extractor } from './types.ts'
+import { xlsxExtractor } from './xlsx.ts'
+import {
+  UnsupportedFileError,
+  type Extracted,
+  type ExtractProgress,
+  type Extractor,
+} from './types.ts'
 
 export * from './types.ts'
 
-const REGISTRY: readonly Extractor[] = [textExtractor, pdfExtractor, pptxExtractor]
+/**
+ * Order matters: the first extractor claiming an extension wins.
+ *
+ * `htmlExtractor` is deliberately ahead of `textExtractor`, which also lists
+ * `.html` among its ~60 extensions. Reading a web page as plain text produces
+ * its markup *and its JavaScript* as prose, which is worse than useless —
+ * whereas the HTML extractor strips both and keeps the tables.
+ */
+const REGISTRY: readonly Extractor[] = [
+  htmlExtractor,
+  textExtractor,
+  pdfExtractor,
+  pptxExtractor,
+  docxExtractor,
+  xlsxExtractor,
+  epubExtractor,
+]
 
 /**
  * Formats we knowingly do not support yet, and when they land.
@@ -28,12 +53,14 @@ const REGISTRY: readonly Extractor[] = [textExtractor, pdfExtractor, pptxExtract
  * the remedy is a re-save rather than a wait.
  */
 const ARRIVING_LATER: Record<string, string> = {
-  '.docx': 'Word support arrives in Phase 8. PDF, PowerPoint and text files work today.',
-  '.xlsx': 'Excel support arrives in Phase 8 — for now, export the sheet to .csv and attach that.',
   '.doc': 'Legacy .doc is a different format from .docx and is not planned. Re-save it as .docx, .pdf or .txt.',
   '.xls': 'Legacy .xls is not planned. Re-save it as .xlsx, or export to .csv and attach that.',
   '.ppt': 'Legacy .ppt is a different format from .pptx and is not planned. Open it in PowerPoint and re-save as .pptx, which works today.',
-  '.epub': 'EPUB support arrives in Phase 10.',
+  '.pages': 'Pages documents are an Apple format Arthur cannot read. Export to .docx or .pdf.',
+  '.key': 'Keynote files are an Apple format Arthur cannot read. Export to .pptx or .pdf.',
+  '.numbers': 'Numbers files are an Apple format Arthur cannot read. Export to .xlsx or .csv.',
+  '.mobi': 'Kindle .mobi is not planned. Convert it to .epub, which works today.',
+  '.azw3': 'Kindle .azw3 is not planned. Convert it to .epub, which works today.',
 }
 
 /** Lower-case extension including the dot. Handles dotfiles like `.gitignore`. */
@@ -56,10 +83,14 @@ export function isSupported(filename: string): boolean {
  * @throws {UnsupportedFileError} for a format with no extractor
  * @throws {UnreadableFileError} for bytes that are not text after all
  */
-export function extract(bytes: Buffer, filename: string): Promise<Extracted> {
+export function extract(
+  bytes: Buffer,
+  filename: string,
+  onProgress?: (progress: ExtractProgress) => void,
+): Promise<Extracted> {
   const ext = extensionOf(filename)
   const extractor = REGISTRY.find((e) => e.extensions.includes(ext))
-  if (extractor) return extractor.extract(bytes, filename)
+  if (extractor) return extractor.extract(bytes, filename, onProgress)
 
   const planned = ARRIVING_LATER[ext]
   if (planned) throw new UnsupportedFileError(ext, planned)

@@ -36,7 +36,7 @@ const MAX_HEIGHT_PX = 208
  * is what the user actually sees for an unsupported format.
  */
 const ACCEPT = [
-  '.pdf', '.pptx',
+  '.pdf', '.pptx', '.docx', '.xlsx', '.xlsm', '.epub',
   '.txt', '.md', '.markdown', '.rst', '.log',
   '.json', '.jsonl', '.csv', '.tsv', '.yaml', '.yml', '.toml', '.ini', '.xml',
   '.html', '.htm', '.css', '.scss', '.less', '.svg',
