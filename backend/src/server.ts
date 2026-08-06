@@ -5,8 +5,10 @@
  * no reason for it to be reachable from the network.
  */
 
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import express from 'express'
-import { MAX_AUDIO_BYTES, MAX_UPLOAD_BYTES, PORT } from './config.ts'
+import { APP_MODE, MAX_AUDIO_BYTES, MAX_UPLOAD_BYTES, PORT, WEB_DIR } from './config.ts'
 import { closeDb } from './db/index.ts'
 import { attachmentsForConversation, claimDocument, getDocument, linkMessageDocument } from './db/documents.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
@@ -28,9 +30,9 @@ import {
   renameConversation,
   touchConversation,
 } from './db/conversations.ts'
-import { checkOllama, sendMessage } from './inference/ollama.ts'
+import { checkOllama, pullModel, sendMessage } from './inference/ollama.ts'
 import { InferenceError, type GenerationStats, type StreamEvent } from './inference/types.ts'
-import { isTier, tierConfig } from './tiers.ts'
+import { isTier, tierConfig, TIER_CONFIG } from './tiers.ts'
 import { deriveTitle } from './titles.ts'
 
 const app = express()
@@ -43,7 +45,74 @@ app.use(express.json({ limit: '1mb' }))
  * Never starts Ollama itself — see `logs.md`, Session 1.
  */
 app.get('/api/health', async (_req, res) => {
-  res.json(await checkOllama())
+  const status = await checkOllama()
+
+  // Which tier models are actually pulled. Ollama reports names with an
+  // explicit tag (`llama3.2:3b`), and so do the tier configs, so this is a
+  // straight comparison — but a model pulled as `llama3.2:3b-instruct-q4_K_M`
+  // is a different model and is correctly reported as missing.
+  const required = Object.values(TIER_CONFIG).map((c) => c.model)
+  const installed = new Set(status.installed ?? [])
+
+  res.json({
+    ...status,
+    // Only meaningful when Ollama is up: an unreachable server has told us
+    // nothing about what is pulled, and reporting all three as missing would
+    // send the user to fix the wrong problem.
+    missing: status.running ? required.filter((m) => !installed.has(m)) : [],
+  })
+})
+
+/**
+ * Pull a missing tier model, streaming progress as SSE.
+ *
+ * Setup, not runtime — see `pullModel`. The UI only offers this when
+ * `/api/health` reports the model missing, which is the one moment where the
+ * alternative is telling a user to open a terminal.
+ */
+app.post('/api/models/pull', async (req, res) => {
+  const { model } = req.body as { model?: unknown }
+
+  // Only the three tier models, never an arbitrary string from the client.
+  // This route reaches the network, so what it can be asked to fetch is a fixed
+  // list rather than whatever arrives in the body.
+  const known = Object.values(TIER_CONFIG).map((c) => c.model)
+  if (typeof model !== 'string' || !known.includes(model)) {
+    res.status(400).json({ error: 'Not one of Arthur’s tier models.' })
+    return
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  res.flushHeaders()
+
+  const controller = new AbortController()
+  res.on('close', () => controller.abort())
+
+  try {
+    for await (const progress of pullModel(model, controller.signal)) {
+      if (res.writableEnded) break
+      res.write(`data: ${JSON.stringify({ type: 'progress', ...progress })}\n\n`)
+    }
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`)
+  } catch (error) {
+    if (!controller.signal.aborted && !res.writableEnded) {
+      const known = error instanceof InferenceError
+      if (!known) console.error('[models] pull failed:', error)
+      res.write(
+        `data: ${JSON.stringify({
+          type: 'error',
+          message: known ? error.message : 'The download failed.',
+        })}\n\n`,
+      )
+    }
+  } finally {
+    if (!res.writableEnded) res.end()
+  }
 })
 
 /* ------------------------------------------------------------ conversations -- */
@@ -490,11 +559,56 @@ app.post('/api/chat', async (req, res) => {
   }
 })
 
+/* ---------------------------------------------------------------- the app -- */
+
+/**
+ * In app mode this process *is* the app: it serves the built UI as well as the
+ * API, on one port, from one window. No Vite, no proxy, no second terminal.
+ *
+ * Registered last so it can never shadow an API route — a static handler that
+ * ran first would happily answer `/api/health` with `index.html` if a file of
+ * that name ever appeared in the build.
+ */
+if (APP_MODE) {
+  if (!existsSync(join(WEB_DIR, 'index.html'))) {
+    console.error(`No UI build found at ${WEB_DIR}. Run setup.bat, or "npm run build" in frontend/.`)
+    process.exit(1)
+  }
+
+  // Hashed filenames are immutable, so they can be cached hard; index.html must
+  // not be, or a rebuilt app keeps loading the previous bundle.
+  app.use(express.static(WEB_DIR, { index: false, maxAge: '1y' }))
+
+  app.get(/.*/, (req, res, next) => {
+    if (req.path.startsWith('/api/')) {
+      next()
+      return
+    }
+    res.setHeader('Cache-Control', 'no-store')
+    res.sendFile(join(WEB_DIR, 'index.html'))
+  })
+}
+
 const server = app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Arthur backend  →  http://127.0.0.1:${PORT}`)
+  console.log(
+    APP_MODE
+      ? `Arthur  →  http://localhost:${PORT}`
+      : `Arthur backend  →  http://127.0.0.1:${PORT}`,
+  )
   // Loads the embedding model in the background so the first upload or the
   // first retrieval isn't the request that pays the cold-start cost.
   warmEmbeddings()
+})
+
+// A stale copy still holding the port is the most likely startup failure once
+// there is a double-clickable launcher, and the default `EADDRINUSE` stack
+// trace flashes past in a window that closes. Say what it means instead.
+server.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use — Arthur is probably already running.`)
+    process.exit(1)
+  }
+  throw error
 })
 
 // Checkpoint the WAL on the way out so `arthur.db` is self-contained for backup.

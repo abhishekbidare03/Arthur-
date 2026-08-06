@@ -9,12 +9,33 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** Backend port. 5178 is the frontend (`chrome --app=` target), so this is 5179. */
-export const PORT = Number(process.env.ARTHUR_PORT ?? 5179)
-
 /** Project root, resolved from this file rather than `process.cwd()` — the
- *  Phase 6 launcher will start the backend from an arbitrary directory. */
+ *  launcher starts the backend from an arbitrary directory. */
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+
+/**
+ * App mode: serve the built UI from this process instead of relying on Vite.
+ *
+ * A CLI flag rather than an environment variable, because the launcher, `cmd`,
+ * PowerShell and npm scripts all disagree about how to set one and an argument
+ * means the same thing everywhere. `npm run serve` passes it; `npm run dev`
+ * does not.
+ */
+export const APP_MODE = process.argv.includes('--app')
+
+/**
+ * Where the app listens.
+ *
+ * One URL — `http://localhost:5178` — in both modes, so the launcher shortcut,
+ * the README and every note in this repo can name a single address. In dev
+ * that port is Vite, which proxies `/api` here on 5179; in app mode there is no
+ * Vite, so this process takes 5178 and serves both halves. Same origin either
+ * way, which is why the backend needs no CORS middleware.
+ */
+export const PORT = Number(process.env.ARTHUR_PORT ?? (APP_MODE ? 5178 : 5179))
+
+/** The frontend's production build, served in app mode. */
+export const WEB_DIR = join(ROOT, 'frontend', 'dist')
 
 /**
  * Conversation history.

@@ -49,10 +49,53 @@ export type ChatEvent =
   | { type: 'done'; stats: GenerationStats }
   | { type: 'error'; code: ErrorCode; message: string; detail?: string }
 
+/**
+ * Yields parsed `data:` payloads from an SSE body.
+ *
+ * Shared by chat and model-pull because the framing bug it guards against is
+ * the same in both: a network chunk can split a frame in half, so the trailing
+ * partial has to be carried forward rather than parsed and discarded.
+ */
+async function* readSse<T>(body: ReadableStream<Uint8Array>, signal: AbortSignal): AsyncGenerator<T> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      const frames = buffer.split('\n\n')
+      buffer = frames.pop() ?? ''
+
+      for (const frame of frames) {
+        const line = frame.split('\n').find((l) => l.startsWith('data: '))
+        if (!line) continue
+        try {
+          yield JSON.parse(line.slice(6)) as T
+        } catch {
+          // Ignore a malformed frame rather than killing a live stream.
+        }
+      }
+    }
+  } catch (error) {
+    if (!signal.aborted) throw error
+  } finally {
+    reader.cancel().catch(() => {})
+  }
+}
+
 export interface HealthStatus {
   running: boolean
   version?: string
   installed?: string[]
+  /** Tier models not yet pulled. Always empty when Ollama is unreachable — it
+   *  has told us nothing, and guessing would send the user to fix the wrong
+   *  problem. */
+  missing?: string[]
   error?: string
 }
 
@@ -66,6 +109,42 @@ export async function checkHealth(): Promise<HealthStatus> {
     // being down, but the user-facing remedy is the same: start the app properly.
     return { running: false, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+/* ----------------------------------------------------------------- setup -- */
+
+export type PullEvent =
+  | { type: 'progress'; status: string; completed?: number; total?: number }
+  | { type: 'done' }
+  | { type: 'error'; message: string }
+
+/**
+ * Downloads a tier model, yielding Ollama's own progress.
+ *
+ * The only call in the app that needs the internet, and it only happens on a
+ * machine that is missing a model — see `pullModel` on the backend.
+ */
+export async function* pullModel(model: string, signal: AbortSignal): AsyncGenerator<PullEvent> {
+  let res: Response
+  try {
+    res = await fetch('/api/models/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+      signal,
+    })
+  } catch (error) {
+    if (signal.aborted) return
+    yield { type: 'error', message: error instanceof Error ? error.message : String(error) }
+    return
+  }
+
+  if (!res.ok || !res.body) {
+    yield { type: 'error', message: `Download failed (HTTP ${res.status}).` }
+    return
+  }
+
+  for await (const event of readSse<PullEvent>(res.body, signal)) yield event
 }
 
 /* ------------------------------------------------------------ persistence -- */
@@ -230,42 +309,14 @@ export async function* streamChat(
     return
   }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
   try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-
-      // SSE frames are separated by a blank line; a network chunk can split one
-      // in half, so the trailing partial frame is carried forward.
-      const frames = buffer.split('\n\n')
-      buffer = frames.pop() ?? ''
-
-      for (const frame of frames) {
-        const line = frame.split('\n').find((l) => l.startsWith('data: '))
-        if (!line) continue
-        try {
-          yield JSON.parse(line.slice(6)) as ChatEvent
-        } catch {
-          // Ignore a malformed frame rather than killing a live stream.
-        }
-      }
-    }
+    for await (const event of readSse<ChatEvent>(res.body, signal)) yield event
   } catch (error) {
-    if (!signal.aborted) {
-      yield {
-        type: 'error',
-        code: 'unknown',
-        message: 'The connection dropped mid-response.',
-        detail: error instanceof Error ? error.message : String(error),
-      }
+    yield {
+      type: 'error',
+      code: 'unknown',
+      message: 'The connection dropped mid-response.',
+      detail: error instanceof Error ? error.message : String(error),
     }
-  } finally {
-    reader.cancel().catch(() => {})
   }
 }

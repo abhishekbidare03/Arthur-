@@ -17,7 +17,7 @@ VRAM**, which drives most of the design decisions in this repo.
 | 3 | Conversation persistence | ✅ Complete |
 | 4 | File input (text only) | ✅ Complete |
 | 5 | Voice in/out | ✅ Complete |
-| 6 | Packaging & launcher | ⬜ Next |
+| 6 | Packaging & launcher | ✅ Complete |
 | 7 | Polish | 🟡 Markdown + code blocks done early |
 | 8 | RAG core (chunking, embeddings, hybrid retrieval) | 🟡 Core done, citation UI pending |
 | 9–10 | Collections, advanced formats | ⬜ |
@@ -112,9 +112,22 @@ CPU-only)
 
 No Rust, no MSVC, no Python — every dependency installs from npm with prebuilt binaries.
 
-## Running it
+## Installing it
 
-Requires [Ollama](https://ollama.com) running, and the tier models pulled:
+Install [Ollama](https://ollama.com) and let its tray app start. Then, from the repo root:
+
+```
+setup.bat
+```
+
+That installs dependencies, builds the UI, generates the Windows icon and puts **Arthur** on the
+Desktop and in the Start menu. After it, Arthur is a double-click — no terminal, no commands.
+The launcher starts the backend with no console window and opens a chromeless Chrome window
+with its own taskbar entry.
+
+You do **not** need to pull the models by hand. If a tier's model is missing, Arthur says so on
+launch and offers to fetch it, with progress, one tier at a time — that download is the only
+moment Arthur uses the internet. If you'd rather do it yourself:
 
 ```bash
 ollama pull qwen2.5:1.5b
@@ -122,22 +135,31 @@ ollama pull llama3.2:3b
 ollama pull qwen3:4b
 ```
 
-With the Ollama tray app running, from the repo root:
+Setup is idempotent: run it again after a `git pull` and it rebuilds and moves on.
+
+### Running it for development
 
 ```powershell
 .\start.ps1
 ```
 
-That checks Ollama is up, installs anything missing, and opens the backend and the dev server
-in their own windows. Ports already in use are left alone, so running it twice is harmless.
-Then open **http://localhost:5178**.
+That checks Ollama is up, installs anything missing, and opens the backend and the Vite dev
+server in their own windows. Ports already in use are left alone, so running it twice is
+harmless. Then open **http://localhost:5178**.
 
-Or start the two halves by hand:
+Or start the halves by hand:
 
 ```bash
-cd backend  && npm install && npm run dev   # http://127.0.0.1:5179
-cd frontend && npm install && npm run dev   # http://localhost:5178
+cd backend  && npm install && npm run dev     # API only, http://127.0.0.1:5179
+cd frontend && npm install && npm run dev     # UI,        http://localhost:5178
+
+cd backend  && npm run serve                  # what the launcher runs: both, on 5178
 ```
+
+**http://localhost:5178** is the address in both modes. In development that port is Vite,
+proxying `/api` to the backend on 5179; in the shipped app there is no Vite, so the backend
+takes 5178 and serves the built UI itself. One process, one port, one URL to remember — and
+same-origin either way, which is why there is no CORS middleware anywhere.
 
 Arthur connects to Ollama's tray-app server and **never spawns its own `ollama serve`** — a
 second server holds the port and silently crash-loops the tray app. `start.ps1` therefore

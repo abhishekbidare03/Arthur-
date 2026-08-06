@@ -52,6 +52,78 @@ export async function checkOllama(): Promise<OllamaStatus> {
   }
 }
 
+/** Progress on one `ollama pull`, forwarded to the UI. */
+export interface PullProgress {
+  status: string
+  /** Bytes fetched so far, when Ollama is reporting a layer download. */
+  completed?: number
+  /** Total bytes of the layer being fetched. */
+  total?: number
+}
+
+/**
+ * Pull a model, streaming progress.
+ *
+ * This is the one place in Arthur that genuinely needs the internet, and it is
+ * setup rather than runtime — the same category as installing Ollama itself.
+ * It exists so a fresh machine never has to be told to open a terminal and type
+ * `ollama pull qwen2.5:1.5b` three times; nothing in the chat loop calls it.
+ *
+ * Ollama does the downloading. Arthur only asks and relays the progress, which
+ * keeps this well clear of fetching and executing anything itself.
+ */
+export async function* pullModel(model: string, signal?: AbortSignal): AsyncGenerator<PullProgress> {
+  let response: Response
+  try {
+    response = await fetch(`${OLLAMA_URL}/api/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      body: JSON.stringify({ model, stream: true }),
+    })
+  } catch (error) {
+    throw new InferenceError(
+      'ollama_unreachable',
+      'Could not reach Ollama.',
+      error instanceof Error ? error.message : String(error),
+    )
+  }
+
+  if (!response.ok || !response.body) {
+    const body = await response.text().catch(() => '')
+    throw new InferenceError('unknown', `Ollama returned HTTP ${response.status}.`, body.slice(0, 400))
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  for await (const bytes of response.body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(bytes, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+
+      let chunk: { status?: string; error?: string; completed?: number; total?: number }
+      try {
+        chunk = JSON.parse(trimmed) as typeof chunk
+      } catch {
+        continue
+      }
+
+      // A pull can fail *mid-stream* with HTTP 200 already sent — no such model,
+      // or the network dropped. Reported as an error rather than a stream that
+      // simply stops, which would read as a silent success.
+      if (chunk.error) throw new InferenceError('unknown', chunk.error)
+      if (chunk.status) {
+        yield { status: chunk.status, completed: chunk.completed, total: chunk.total }
+      }
+    }
+  }
+}
+
 /**
  * Stream one assistant turn.
  *

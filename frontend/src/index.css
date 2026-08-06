@@ -958,6 +958,22 @@
     cursor: default;
     opacity: 0.6;
   }
+
+  /* First-launch model download. */
+  .setup-track {
+    height: 3px;
+    border-radius: 999px;
+    background: var(--fill-hover);
+    overflow: hidden;
+  }
+  .setup-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: var(--accent);
+    /* Ollama reports progress in bursts, so without this the bar jumps in
+       visible steps rather than filling. */
+    transition: width var(--dur-base) var(--ease-out);
+  }
 }
 
 @keyframes blink {

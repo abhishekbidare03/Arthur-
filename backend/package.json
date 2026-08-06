@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "serve": "tsx src/server.ts --app",
     "typecheck": "tsc --noEmit",
     "test": "tsx extractors.test.mts && tsx buildContext.test.mts && tsx rag.test.mts && tsx voice.test.mts"
   },

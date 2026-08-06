@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ChatPane from './components/ChatPane'
 import InputBar from './components/InputBar'
+import ModelSetup from './components/ModelSetup'
 import OllamaBanner from './components/OllamaBanner'
 import Sidebar from './components/Sidebar'
 import TopBar from './components/TopBar'
@@ -445,9 +446,14 @@ export default function App() {
   const willReloadModel =
     loadedModelRef.current !== null && loadedModelRef.current !== tierInfo(tier).model
 
+  // Ollama being down and its models being absent are two different problems
+  // with two different remedies, and only one can be acted on at a time — the
+  // missing-model list is meaningless until the server answers.
   const banner =
     health && !health.running ? (
       <OllamaBanner error={health.error} onRetry={() => void refreshHealth()} />
+    ) : health?.missing?.length ? (
+      <ModelSetup missing={health.missing} onDone={() => void refreshHealth()} />
     ) : null
 
   return (
