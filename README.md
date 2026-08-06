@@ -1,209 +1,266 @@
+<img src="docs/logo.svg" align="right" width="330" alt="Arthur">
+
 # Arthur
 
-A Claude-style desktop chat app that runs entirely on your own machine. No internet, no API
-key, no cloud calls — local models via [Ollama](https://ollama.com), served as a local web app
-in a chromeless Chrome window.
+**A local-first AI chat application with retrieval, documents and voice — running entirely on your own machine.**
 
-Built to be usable on modest hardware: the reference machine is a GTX 1650 Ti with **4 GB of
-VRAM**, which drives most of the design decisions in this repo.
+No API key, no cloud, no telemetry. Local models via [Ollama](https://ollama.com), served as a
+desktop app in a chromeless window. The reference machine is a **GTX 1650 Ti with 4 GB of VRAM**,
+and that constraint drives most of the design in this repository.
 
-## Status
+[![status](https://img.shields.io/badge/status-complete-2ea44f?style=flat-square)](#overview)
+[![offline](https://img.shields.io/badge/runtime-100%25%20offline-ea580c?style=flat-square)](#)
+[![stack](https://img.shields.io/badge/React%2019-TypeScript%205.7-38bdf8?style=flat-square)](#tech-stack)
+[![tests](https://img.shields.io/badge/tests-13%20suites%20passing-2ea44f?style=flat-square)](#testing)
+[![platform](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square)](#getting-started)
 
-| Phase | | |
-|---|---|---|
-| 0 | Model selection | ✅ Complete |
-| 1 | UI shell (static) | ✅ Complete |
-| 2 | Local inference wiring | ✅ Complete |
-| 3 | Conversation persistence | ✅ Complete |
-| 4 | File input (text only) | ✅ Complete |
-| 5 | Voice in/out | ✅ Complete |
-| 6 | Packaging & launcher | ✅ Complete |
-| 7 | Polish | ✅ Complete |
-| 8 | RAG core (chunking, embeddings, hybrid retrieval) | ✅ Complete |
-| 9 | Collections / knowledge base | ✅ Complete |
-| 10 | Advanced formats (OCR, Office, EPUB) | ✅ Complete |
+<br clear="right">
 
-Working chat with real streamed responses across three effort tiers, with durable local
-history in SQLite. Conversations survive restarts; rename and delete from the sidebar.
-Text files can be attached by picker or drag-and-drop and asked about.
+---
 
-## Attachments
+## Overview
 
-Attach **PDFs**, **PowerPoint decks**, or any of ~60 text and source formats — by paperclip or
-by dropping onto the chat column. The chip shows its **token** cost rather than its byte size,
-because tokens are what decide whether it fits.
+Arthur is a full-stack application that turns a modest gaming laptop into a private AI workspace.
+It streams answers from local language models, reads your documents — including **scanned PDFs**,
+Office files and EPUBs — and answers from them with **citations you can open and check**.
+
+The interesting engineering isn't the chat loop; it's everything the 4 GB ceiling forces. Only one
+model fits in VRAM at a time, context is capped at 8192 tokens, and every supporting model
+(embeddings, OCR, speech) is deliberately pushed onto the CPU so it never competes with the model
+that's generating. Retrieval, not truncation, is what makes a 200-page PDF answerable inside that
+budget.
+
+Everything ships as **one Node process on one port**, so the production app has no CORS layer, no
+second service and no build server — you double-click an icon and a window opens.
+
+### Highlights
+
+| | |
+|---|---|
+| 🔒 **Fully offline** | The only network call ever made is downloading a model |
+| 🧠 **Three effort tiers** | Three different local models, switchable per conversation |
+| 📄 **Nine document formats** | PDF, scanned PDF (OCR), DOCX, XLSX, PPTX, HTML, EPUB, ~60 text types |
+| 🔍 **Hybrid retrieval** | FTS5 keyword search + vector similarity, fused by reciprocal rank |
+| 📎 **Verifiable citations** | Every retrieved answer shows the passages it was built from |
+| 📚 **Collections** | Index a folder once, reuse it across conversations |
+| 🎙️ **Live dictation** | Words appear as you speak, via `whisper-tiny.en` on CPU |
+| 🔊 **Read aloud** | Answers spoken back using local system voices only |
+| 💾 **Durable history** | SQLite with WAL; conversations survive restarts |
+| 🖥️ **Double-click install** | One script builds the app and puts it on your Desktop |
+
+---
+
+## Architecture
+
+<p align="center">
+  <img src="docs/architecture.svg" width="100%" alt="Arthur system architecture">
+</p>
+
+### Request lifecycle
+
+A chat turn with an attached document travels the whole system:
+
+1. **Upload** — the browser `POST`s the file to `/api/documents`. The server picks an extractor by
+   extension, pulls out text page by page, and OCRs any page that has no text layer.
+2. **Index** — the text is chunked at ~500 tokens on page boundaries, embedded on the CPU, and
+   written to `chunks`, `chunks_fts` and `chunk_vectors` in a single transaction. Progress streams
+   back as SSE so the chip can count.
+3. **Ask** — the question goes to `/api/chat`. If the attachment fits the token budget it's injected
+   whole; if not, retrieval runs — keyword and vector search in parallel, fused by RRF — and only the
+   passages that answer *this question* are sent.
+4. **Generate** — the context builder assembles history, attachments and collection material inside
+   8192 tokens, then hands it to `sendMessage(conversation, tier)`, the single seam through which all
+   inference passes.
+5. **Stream** — tokens come back over SSE and render live. The passages used are stored against the
+   answer, so reopening the conversation months later shows the same citations.
+
+### Design decisions worth knowing
+
+<details>
+<summary><b>Why SQLite + sqlite-vec instead of a vector database</b></summary>
+
+<br>
+
+A separate vector store (ChromaDB, Qdrant) means a second process, a second runtime and a second
+thing to install. `sqlite-vec` is a loadable extension that lives **in the same `arthur.db` file** as
+the conversations, so a chunk and its embedding are written in one transaction and retrieval is a
+`SELECT` in the same process.
+
+That choice paid for itself when a real bug appeared: `chunk_vectors` and `chunks_fts` are virtual
+tables, which **cannot participate in a foreign key**. Deleting a conversation cascaded away its
+chunks while both indexes kept every row; SQLite then reused those freed rowids and failed on a
+UNIQUE constraint — silently disabling retrieval for an entire phase. Because everything is one
+database, the fix was a startup prune and rowid-clearing inserts rather than a cross-service
+reconciliation job.
+</details>
+
+<details>
+<summary><b>Why every supporting model runs on the CPU</b></summary>
+
+<br>
+
+With 4 GB of VRAM, anything that shares the GPU with the chat model evicts it. Embeddings
+(`bge-small-en-v1.5`), speech (`whisper-tiny.en`) and OCR (`tesseract.js`) therefore all run on the
+CPU through ONNX/WASM — never through Ollama. Indexing a document while a conversation is open costs
+latency, not a model reload.
+</details>
+
+<details>
+<summary><b>Why there is no <code>canvas</code> dependency for OCR</b></summary>
+
+<br>
+
+Rendering a PDF page to a bitmap normally means `canvas`, a native module requiring MSVC. But a
+scanned page already **is** an image — `pdfjs-dist` hands it over decoded. Arthur pulls the pixels
+straight out and wraps them in a PNG container using ~60 lines over `node:zlib`.
+
+That keeps the whole repository installable from npm with prebuilt binaries: **no Rust, no MSVC, no
+Python.** For the same reason, Office and EPUB parsing is `fflate` plus a scan of the elements that
+carry text, and HTML uses no DOM library — what's needed is the opposite of a DOM.
+</details>
+
+<details>
+<summary><b>Why dictation splits on pauses</b></summary>
+
+<br>
+
+Whisper is not a streaming model; it transcribes a finished clip. Re-transcribing the whole recording
+every second gets slower the longer you talk. Splitting on natural pauses keeps each clip short
+enough to transcribe quickly *and* whole enough for the model to hear correctly, so latency stays
+flat however long the recording runs.
+
+`tiny.en` was chosen over `base.en` because it measured **better**, not just faster: on a
+deliberately awkward test sentence it got "Kubernetes" right where `base.en` produced "Kibernets",
+while being 60% quicker and half the size.
+</details>
+
+<details>
+<summary><b>Why one process on one port</b></summary>
+
+<br>
+
+`http://localhost:5178` is the address in **both** modes. In development that port is Vite, proxying
+`/api` to the backend on 5179; in the shipped app there is no Vite, so the backend takes 5178 and
+serves the built UI itself. Same-origin either way — which is why there is no CORS middleware
+anywhere in the codebase. Static file serving is registered **last**, so it can never shadow an API
+route, and unknown `/api/*` paths 404 instead of returning `index.html`.
+</details>
+
+---
+
+## Features
+
+### Documents
+
+Attach files by paperclip or drag-and-drop. The chip shows its **token** cost rather than its byte
+size, because tokens are what decide whether it fits.
 
 | Format | Read as |
 |---|---|
 | `.pdf` | Per-page text via `pdfjs-dist`, fonts resolved locally — no CDN, no network |
-| `.pdf` (scanned) | OCR'd automatically, page by page, only where there's no text layer |
+| `.pdf` *(scanned)* | OCR'd automatically, page by page, only where there is no text layer |
 | `.docx` | Paragraphs and **tables**, by reading the file's own XML |
-| `.xlsx` | One page per sheet, named as it is in Excel, cells kept in their columns |
+| `.xlsx` `.xlsm` | One page per sheet, named as it is in Excel, cells kept in their columns |
 | `.pptx` | Per-slide text with speaker notes |
 | `.html` | Prose, with scripts and styles removed and tables kept |
 | `.epub` | Chapter by chapter, in the book's own spine order |
 | ~60 text/source types | Directly, with binary files refused rather than mangled |
 
-**Tables survive as tables.** In Word, Excel and HTML alike, a table comes out tab-separated
-rather than flattened into a run of words — a spreadsheet read as prose looks like data while
-being unanswerable. Empty cells are preserved too, because dropping them shifts every value left
-of a gap into the wrong column.
+- **Tables survive as tables.** Tab-separated rather than flattened into a run of words. Empty cells
+  are preserved too — dropping them shifts every value left of a gap into the wrong column.
+- **Scanned PDFs are read, not refused.** Detection is per page, so a report with three scanned
+  appendices OCRs only those three. It stops at 40 pages and says so.
+- **Files stay with the turn they were attached to.** Attach a different file and ask "what is this"
+  and only the new one answers; ask a genuine follow-up about the first three turns later and it is
+  still there.
+- **Large files are retrieved, not truncated.** Verified against a 49,633-character document with a
+  fact placed 60% of the way through: the old truncation path would never have reached it.
+- **Refusals are specific.** An image-only deck says its slides are pictures; legacy `.doc`/`.ppt`
+  say to re-save, because no amount of waiting will help.
 
-**Scanned PDFs are read, not refused.** Any page with no text layer is OCR'd automatically —
-detection is per page, so a report with three scanned appendices OCRs only those three. This
-needs no renderer and no native modules: a scanned page already *is* an image, so Arthur pulls
-it straight out of the PDF and hands it to `tesseract.js`. Slow — seconds per page on CPU — so
-the chip counts pages while it works, and it stops at 40 pages and says so.
+### Collections
 
-Context is 8192 tokens, so a newly-attached file takes at most 60% of the working budget and is
-truncated rather than silently dropped — both the model and the message are told what was cut.
+Point a collection at a **folder** (`Ctrl+K`) and Arthur walks it, indexing what it can and skipping
+`node_modules`, `.git`, build output and binaries. Re-scan any time — files are recognised by content,
+so an unchanged one costs a single read.
 
-**Each file stays with the turn it was attached to**, not re-pasted onto every later message.
-Ask a follow-up about it later in the same chat and it is still there, because that turn is
-still in history — but attach a *different* file and ask "what is this", and only the new one
-answers. Gluing every attachment onto the newest question was the original design and it
-produced exactly that mix-up; a file now sits next to the question it actually belongs to, the
-way a real conversation does.
+Link a chat to a collection and every turn answers from it with **nothing attached and nothing
+re-uploaded**. You can also just **search** a collection without asking anything: same hybrid
+retrieval, no model loaded, results in milliseconds. Documents that failed to index are labelled
+**"not searchable"** rather than shown with a neutral badge — to retrieval they may as well not exist.
 
-**Large files are retrieved, not blindly truncated.** A file too large to inject whole is
-chunked (~500 tokens, page-aware) and embedded on CPU (`bge-small-en-v1.5`, never via Ollama —
-zero VRAM contention with the chat model), then searched by a hybrid of vector similarity and
-SQLite FTS5 keyword search, fused by reciprocal rank. The chunks most relevant to *this
-question* are sent instead of whichever characters happened to come first. Verified against a
-real 49,633-character document with a fact placed 60% of the way through, against the smallest
-tier's ~4,200-token attachment budget — the old truncation path (first ~16,700 characters) would
-never have reached it; retrieval did.
+### Voice
 
-**Every retrieved answer says what it was given.** Under the reply, a collapsed `8 sources ·
-report.pdf p. 4, 11–13` opens to the passages themselves, in full. Not a snippet with a link —
-there is nowhere to link *to*, since the source is a stored file rather than a rendered page, so
-showing the text is the whole affordance. They're stored against the answer, so reopening the
-conversation months later shows the same citations it showed when the answer first arrived.
+**Dictate** with the mic button and the words appear **as you speak**. Press again to stop; the text
+stays in the composer **editable** and is never sent for you, so a misheard word is a one-word fix
+rather than a re-record. Pressing send while still talking finishes the sentence first.
 
-**Files stay useful for the rest of the conversation.** Ask about an attachment three turns
-later and Arthur retrieves from it against your new question, rather than dropping the turn
-because it no longer fits. Only the most recent oversized turn is compressed — anything older
-wouldn't have fit either, and spending the remaining budget there would starve the part of the
-conversation you're actually in.
+**Read aloud** any answer with the speaker button, using the voices Windows already ships — no model,
+no download. Markdown is stripped to prose first. Voices that synthesize over the network (Chrome's
+"Google …" ones) are filtered out; if a machine has *only* those, the button hides itself rather than
+quietly making a network call.
 
-Large uploads show real progress (`indexing 32/49`), counted in chunks, because that's what the
-work is made of.
+### Effort tiers
 
-Refusals stay specific. An image-only deck says its slides are pictures; a PDF that is neither
-text nor a readable scan (a vector drawing, a form) says exactly that rather than promising a
-feature that already exists; legacy `.doc`/`.ppt`/`.xls` say to re-save, because they share
-nothing with their modern namesakes and no amount of waiting will help.
-
-## Collections
-
-Build a document set once and reuse it. Point a collection at a **folder** (`Ctrl+K`) and Arthur
-walks it, reads what it can, and indexes it — skipping `node_modules`, `.git`, build output and
-binaries rather than drowning the collection in them. Re-scan any time: files are recognised by
-content, so an unchanged one costs a single read and nothing else.
-
-Link a chat to a collection and every turn answers from it — **nothing attached, nothing
-re-uploaded**. The passages come back as citations like any other retrieval, so you can see what
-the answer was built from. Collection material is marked as reference material rather than as an
-attached file, so the model doesn't describe your notes as "the document you sent me".
-
-You can also just **search** a collection without asking anything. Same hybrid retrieval, no
-model loaded, results in milliseconds — "which of my notes mentions this?" is a different
-question from "answer this".
-
-The document list shows what's actually searchable. A file that failed to index says **"not
-searchable"** rather than showing a neutral badge, because to retrieval it may as well not
-exist; re-index or remove it from there.
-
-## Voice
-
-**Dictate** with the mic button and the words appear **as you speak** — each phrase is
-transcribed the moment you pause, so the text keeps pace with you rather than arriving in a lump
-at the end. Press again to stop; the text stays in the composer **editable** and is never sent
-for you, so a misheard word is a one-word fix rather than a re-record. Pressing send while still
-talking finishes the sentence first rather than cutting it off.
-
-Whisper is not a streaming model — it transcribes a finished clip. Splitting on natural pauses is
-what makes it feel live: the pieces are short enough to transcribe quickly *and* whole enough
-that the model still has the context it needs to hear correctly. The obvious alternative,
-re-transcribing everything every second, gets slower exactly as you talk longer; this way the lag
-stays flat however long the recording runs. Speech recognition is `whisper-tiny.en` on CPU
-through ONNX, ~3.7× realtime here, cached on E: beside the other models.
-
-`tiny.en` rather than `base.en` because it measured *better*, not just faster: on a deliberately
-awkward test sentence it got "Kubernetes" right where `base.en` produced "Kibernets", while being
-60% quicker and half the size.
-
-**Read aloud** any answer with the speaker button. This uses the voices Windows already ships,
-through the browser — no model, no download. Markdown is stripped to prose first, so a code block
-is announced rather than read out backtick by backtick. Voices that synthesize over the network
-(Chrome's "Google …" ones) are filtered out; if a machine has *only* those, the button hides
-itself rather than quietly making a network call.
-
-## Finishing touches
-
-Under every finished answer: **how long it actually took** — time to first token, measured
-tok/s, output tokens, with the full breakdown on hover. Which tier is worth its wait is a real,
-repeated decision on this hardware, and it can't be made from a number measured once on an idle
-machine. If earlier turns were dropped to fit the context window, it says so — an answer
-assembled without the start of a conversation can be wrong in a way that looks entirely
-confident.
-
-**Retry at a different tier** without retyping anything. The question stays exactly as asked,
-attached files come with it, and the stale answer is *replaced* rather than joined by a second
-one. The tier you pick is adopted for the rest of the conversation.
-
-**Export as Markdown** (`Ctrl+E`) — code fences intact, reasoning collapsed into a `<details>`,
-attachments named, stopped replies marked. Built from what's already on screen, so it works even
-with the backend down.
-
-Shortcuts: `Ctrl+N` new chat · `Ctrl+E` export · `Ctrl+B` sidebar · `Ctrl+1/2/3` tier ·
-`Ctrl+Shift+M` dictate · `Esc` stop · `?` for the list.
-
-## Effort tiers
-
-Three user-selectable levels, each a different local model rather than one model with a
-thinking budget. Only one fits in 4 GB of VRAM at a time, so switching costs a reload.
+Three user-selectable levels, each a different local model rather than one model with a thinking
+budget. Only one fits in 4 GB at a time, so switching costs a reload.
 
 | Tier | Model | Throughput | GPU |
-|---|---|---|---|
+|:--|:--|--:|--:|
 | Low | `qwen2.5:1.5b` | ~106 tok/s | 100% |
-| Medium *(default)* | `llama3.2:3b` | ~40 tok/s | 78% |
+| **Medium** *(default)* | `llama3.2:3b` | ~40 tok/s | 78% |
 | High | `qwen3:4b` | ~15 tok/s | 64% |
 
 Measured at `num_ctx` 8192 with a `q8_0` KV cache. Only High produces reasoning, rendered in a
 separate collapsible panel.
 
-## Stack
+### Quality of life
 
-React 19 · TypeScript · Vite 7 · Tailwind v4 · Express 5 · Ollama · SQLite · sqlite-vec ·
-pdfjs-dist · fflate · tesseract.js · transformers.js (bge-small-en-v1.5 embeddings and
-whisper-tiny.en speech, both CPU-only)
+- **Timing under every answer** — time to first token, measured tok/s, output tokens, with the full
+  breakdown on hover. If earlier turns were dropped to fit the context window, it says so.
+- **Retry at a different tier** without retyping. Attachments come with it, and the stale answer is
+  *replaced* rather than joined by a second one.
+- **Export as Markdown** (`Ctrl+E`) — code fences intact, reasoning collapsed into a `<details>`,
+  attachments named, stopped replies marked. Built from what's on screen, so it works with the
+  backend down.
 
-No Rust, no MSVC, no Python — every dependency installs from npm with prebuilt binaries.
+| Shortcut | Action | | Shortcut | Action |
+|:--|:--|:--|:--|:--|
+| `Ctrl+N` | New chat | | `Ctrl+1/2/3` | Switch tier |
+| `Ctrl+E` | Export Markdown | | `Ctrl+Shift+M` | Dictate |
+| `Ctrl+B` | Toggle sidebar | | `Esc` | Stop generating |
+| `Ctrl+K` | Collections | | `?` | Shortcut list |
 
-Several things that would normally be dependencies are not, each for a specific reason rather
-than as a principle. Office and EPUB parsing is `fflate` plus a scan of the elements that carry
-text, because those files are ZIPs of a narrow, machine-generated schema. HTML uses no DOM
-library because what's needed is the opposite of a DOM — everything that makes it a document
-gets thrown away. And OCR needs a PNG encoder, which is 60 lines over `node:zlib`, rather than
-`canvas` — a native module needing MSVC, which would have broken the line above.
+---
 
-## Installing it
+## Getting started
 
-Install [Ollama](https://ollama.com) and let its tray app start. Then, from the repo root:
+### Prerequisites
 
-```
+| | |
+|---|---|
+| **Node.js** | 22 or newer |
+| **Ollama** | Installed, with its tray app running |
+| **OS** | Windows 10/11 (the launcher and icon tooling are Windows-specific) |
+| **GPU** | Any; 4 GB VRAM is enough for all three tiers |
+
+### Install
+
+```powershell
 setup.bat
 ```
 
-That installs dependencies, builds the UI, generates the Windows icon and puts **Arthur** on the
-Desktop and in the Start menu. After it, Arthur is a double-click — no terminal, no commands.
-The launcher starts the backend with no console window and opens a chromeless Chrome window
-with its own taskbar entry.
+Installs dependencies, builds the UI, generates the Windows icon, and puts **Arthur** on the Desktop
+and in the Start menu. After that Arthur is a double-click — no terminal, no commands. The launcher
+starts the backend with no console window and opens a chromeless Chrome window with its own taskbar
+entry.
 
-You do **not** need to pull the models by hand. If a tier's model is missing, Arthur says so on
-launch and offers to fetch it, with progress, one tier at a time — that download is the only
-moment Arthur uses the internet. If you'd rather do it yourself:
+Setup is idempotent: run it again after a `git pull` and it rebuilds and moves on.
+
+### Models
+
+You do **not** need to pull models by hand. If a tier's model is missing, Arthur says so on launch
+and offers to fetch it with progress, one tier at a time. If you'd rather:
 
 ```bash
 ollama pull qwen2.5:1.5b
@@ -211,140 +268,158 @@ ollama pull llama3.2:3b
 ollama pull qwen3:4b
 ```
 
-Setup is idempotent: run it again after a `git pull` and it rebuilds and moves on.
-
-### Running it for development
+### Run for development
 
 ```powershell
 .\start.ps1
 ```
 
-That checks Ollama is up, installs anything missing, and opens the backend and the Vite dev
-server in their own windows. Ports already in use are left alone, so running it twice is
-harmless. Then open **http://localhost:5178**.
+Checks Ollama is up, installs anything missing, and opens the backend and the Vite dev server in
+their own windows. Ports already in use are left alone, so running it twice is harmless. Then open
+**http://localhost:5178**.
 
 Or start the halves by hand:
 
 ```bash
-cd backend  && npm install && npm run dev     # API only, http://127.0.0.1:5179
+cd backend  && npm install && npm run dev     # API only,  http://127.0.0.1:5179
 cd frontend && npm install && npm run dev     # UI,        http://localhost:5178
-
-cd backend  && npm run serve                  # what the launcher runs: both, on 5178
+cd backend  && npm run serve                  # both on 5178 — what the launcher runs
 ```
 
-**http://localhost:5178** is the address in both modes. In development that port is Vite,
-proxying `/api` to the backend on 5179; in the shipped app there is no Vite, so the backend
-takes 5178 and serves the built UI itself. One process, one port, one URL to remember — and
-same-origin either way, which is why there is no CORS middleware anywhere.
+> **Note** — Arthur connects to Ollama's tray-app server and **never spawns its own `ollama serve`**.
+> A second server holds port 11434 and silently crash-loops the tray app, so `start.ps1` checks for
+> Ollama and stops with instructions rather than trying to start it.
 
-Arthur connects to Ollama's tray-app server and **never spawns its own `ollama serve`** — a
-second server holds the port and silently crash-loops the tray app. `start.ps1` therefore
-checks for Ollama and stops with instructions rather than trying to start it.
+### Configuration
 
-### Recommended Ollama settings
+Set these as user environment variables. A quantized KV cache roughly halves memory per token, which
+is what makes an 8192-token context viable on 4 GB — flash attention is a prerequisite, not an
+optional extra.
 
-A quantized KV cache roughly halves memory per token, which is what makes an 8192-token context
-viable on 4 GB. Set these as user environment variables:
+| Variable | Value | Why |
+|---|---|---|
+| `OLLAMA_FLASH_ATTENTION` | `1` | Required for the KV cache setting below |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Halves KV memory; +45% throughput at 4096 on High |
+| `OLLAMA_MODELS` | *(your drive)* | Point model blobs off the system drive if space is tight |
+| `ARTHUR_PORT` | `5178` | Override the app port if it clashes |
+
+---
+
+## Tech stack
+
+| Layer | Choices |
+|---|---|
+| **Frontend** | React 19 · TypeScript 5.7 · Vite 7 · Tailwind v4 |
+| **Backend** | Node 22+ · Express 5 · `tsx` |
+| **Data** | SQLite (WAL) via `better-sqlite3` · FTS5 · `sqlite-vec` |
+| **Inference** | Ollama (`qwen2.5` · `llama3.2` · `qwen3`) |
+| **ML on CPU** | `@xenova/transformers` — `bge-small-en-v1.5`, `whisper-tiny.en` |
+| **Documents** | `pdfjs-dist` · `fflate` · `tesseract.js` |
+| **Packaging** | VBScript launcher · PowerShell setup · System.Drawing icon generation |
+
+Every dependency installs from npm with prebuilt binaries. **No Rust, no MSVC, no Python.**
+
+---
+
+## Project structure
 
 ```
-OLLAMA_FLASH_ATTENTION=1
-OLLAMA_KV_CACHE_TYPE=q8_0
+Arthur/
+├─ backend/
+│  └─ src/
+│     ├─ server.ts              # Express app; static UI registered last
+│     ├─ tiers.ts               # tier → model, context, temperature
+│     ├─ config.ts              # ports, paths, --app mode flag
+│     ├─ inference/             # the sendMessage(conversation, tier) seam
+│     ├─ context/buildContext.ts# token budgeting, history, citations
+│     ├─ documents/
+│     │  ├─ extractors/         # pdf · docx · xlsx · pptx · html · epub · text
+│     │  ├─ ocr.ts              # tesseract over images lifted from the PDF
+│     │  └─ png.ts              # 60-line PNG encoder (replaces `canvas`)
+│     ├─ rag/                   # chunking, embeddings, folder ingest
+│     └─ db/                    # schema, vectors, collections, sources
+├─ frontend/
+│  └─ src/
+│     ├─ App.tsx                # conversation state, turn orchestration
+│     ├─ api.ts                 # shared SSE frame reader
+│     ├─ components/            # ChatPane · KnowledgePanel · Citations · …
+│     └─ voice/                 # recorder · pause segmenter · speech
+├─ docs/                        # architecture notes and diagrams
+├─ tools/                       # setup.ps1, make-icon.ps1
+├─ setup.bat                    # one-shot install + build + shortcuts
+├─ Arthur.vbs                   # launcher: hidden backend + chromeless window
+└─ start.ps1                    # development launcher
 ```
 
-Flash attention is a prerequisite, not an optional extra.
+---
 
-## Tests
+## Testing
 
 ```bash
-cd backend  && npm test
-cd frontend && npm test
+cd backend  && npm test     # 7 suites
+cd frontend && npm test     # 6 suites
 ```
 
-`backend/extractors.test.mts` builds a real two-page PDF and a real `.pptx` in memory — no
-committed fixtures — and checks page and slide numbers survive, speaker notes are labelled, and
-each refusal is specific (a corrupt PDF, a text-free scan, and a legacy `.ppt` all say different
-things).
+Thirteen suites, no mocked infrastructure — real embeddings, real `sqlite-vec`, real FTS5, real
+files. Only the database path is redirected to a scratch directory.
 
-`backend/buildContext.test.mts` pins the cross-file mix-up bug: attach file A, ask about it,
-attach a different file B, ask "what is this" — asserts B's text lands on the new turn and A's
-does not, that a genuine follow-up about A (no re-attach) still works, and that an oversized,
-un-indexed attachment truncates rather than dropping the whole turn.
+<details>
+<summary><b>What each suite pins</b></summary>
 
-`backend/rag.test.mts` exercises the real retrieval pipeline — real embeddings, real
-`sqlite-vec`, real FTS5, no mocks (only the database file is redirected to a scratch path).
-Builds a three-page fixture with a distinct fact per page, chunks it, indexes it, and checks
-that a query about one page's fact returns that page's chunk and not the others; that keyword
-search finds an exact code; that a tight token budget is never exceeded; and that
-`buildContext` falls back from truncation to retrieval for an oversized *indexed* file while
-still truncating one that isn't.
+<br>
 
-`backend/index-integrity.test.mts` pins a bug that silently disabled retrieval for a whole
-phase. `chunk_vectors` and `chunks_fts` are virtual tables, which cannot participate in a foreign
-key — so deleting a conversation cascaded away its chunks while both indexes kept every row, and
-SQLite then reused those rowids for the next document and failed on a UNIQUE constraint. The test
-ingests, cascade-deletes, asserts the stranding actually happens, then re-ingests onto the freed
-rowids.
+**Backend**
 
-`backend/formats.test.mts` builds a `.docx`, `.xlsx`, `.html`, `.epub` and a scanned PDF in
-memory and checks the things that fail *silently*: that a table keeps its columns, that an
-Excel row with a gap doesn't shift its values one column left, that `<script>` bodies don't
-survive tag-stripping as prose, that an EPUB reads in spine order rather than filename order
-(chapter 10 before chapter 2), and that a scan actually OCRs. The OCR fixture renders real text
-through System.Drawing — a hand-drawn bitmap font was tried first and tesseract read "ROTATION"
-as "FOTHTION", which is a fair verdict on the fixture rather than on the pipeline.
+| Suite | Covers |
+|---|---|
+| `extractors.test.mts` | Builds a real two-page PDF and a real `.pptx` in memory — no committed fixtures — and checks page/slide numbers survive, notes are labelled, and each refusal is specific |
+| `formats.test.mts` | Builds `.docx`, `.xlsx`, `.html`, `.epub` and a scanned PDF, checking the things that fail *silently*: table columns, an Excel row with a gap not shifting left, `<script>` bodies not surviving as prose, EPUB spine order (chapter 10 before chapter 2), and that a scan actually OCRs |
+| `buildContext.test.mts` | Pins the cross-file mix-up bug: attach A, ask, attach B, ask "what is this" — B lands on the new turn and A does not |
+| `rag.test.mts` | The real retrieval pipeline end to end: a three-page fixture with a distinct fact per page, a query returning the right page's chunk, keyword search finding an exact code, and a tight token budget never exceeded |
+| `index-integrity.test.mts` | Ingests, cascade-deletes, asserts the index stranding actually happens, then re-ingests onto the freed rowids |
+| `collections.test.mts` | Folder walk skipping `node_modules` and binaries, re-scan recognising unchanged files, and that ingest **cannot steal a document row a conversation owns** |
+| `voice.test.mts` | Real WAVs for each case that differs — an 18-byte `fmt ` chunk, an unexpected chunk before `data`, stereo downmix, unsigned 8-bit, resampling — then real synthesized speech through the real model |
 
-`backend/collections.test.mts` covers folder ingest with real files: that the walk skips
-`node_modules` and binaries, that a re-scan recognises unchanged files instead of re-embedding
-them, that ingesting a folder **cannot steal a document row a conversation owns**, and that a
-linked collection's passages reach the prompt with nothing attached to the message.
+**Frontend** *(jsdom, asserting against the rendered DOM)*
 
-Two jsdom tests, both asserting against the rendered DOM:
+| Suite | Covers |
+|---|---|
+| `streaming.test.tsx` | The real `App` against a mocked SSE backend, across a new chat and a follow-up |
+| `markdown.test.tsx` | Malformed fences copied verbatim from the conversation database coming out as real code blocks |
+| `attachments.test.tsx` | The chip, the document id on the request, and the truncation warning |
+| `voice.test.tsx` | Plays audio *into* the recorder to check words land in the composer **while recording is still running**, phrases accumulate in order, and nothing is auto-sent |
+| `polish.test.tsx` | Latency from what the reply measured rather than the tier table; retry **replacing** the previous answer. The retry assertion counts rendered bodies rather than matching text — the substring version passed even with the replacement sabotaged |
+| `segmenter.test.mts` | When a phrase has ended: a real pause ends one, a gap between words does not, a long unbroken run is still cut, and silence is never sent |
 
-- **`streaming.test.tsx`** renders the real `App` against a mocked SSE backend and checks the
-  streamed reply reaches the screen, across a new chat and a follow-up turn.
-- **`markdown.test.tsx`** feeds the renderer malformed fences copied verbatim from the
-  conversation database and checks they come out as real code blocks.
-- **`attachments.test.tsx`** picks a file in the composer and checks the chip, the document id
-  on the request, and the truncation warning.
-- **`voice.test.tsx`** drives the mic button with the browser audio graph mocked, *playing audio
-  into* the recorder to check that words land in the composer **while recording is still
-  running** — the point of the feature — that phrases accumulate in order, that the mic and
-  audio context are released on stop, and that nothing is auto-sent.
-- **`polish.test.tsx`** covers the Phase 7 behaviours that fail *silently* rather than visibly:
-  that the latency readout comes from what this reply measured rather than the tier table, that
-  retry replaces the previous answer instead of appending a second one under the same question,
-  and that the Markdown export round-trips code fences, reasoning, attachment names and a
-  stopped reply. The retry assertion counts rendered answer bodies rather than matching text —
-  the substring version passed even with the replacement sabotaged.
-- **`segmenter.test.mts`** covers the logic that decides when a phrase has ended: a real pause
-  ends one, a gap between words does not (or dictation would fragment into unusable scraps), a
-  long unbroken run is still cut so text keeps appearing, and silence is never sent at all.
+The two jsdom suites exist because bugs in that layer are invisible from the backend: `/api/chat`
+streamed correctly and SQLite stored every answer while the UI showed nothing at all.
+</details>
 
-`backend/voice.test.mts` builds real WAVs for each case that actually differs — an 18-byte `fmt `
-chunk (what Windows writes, and what a fixed-offset reader decodes as garbage), an unexpected
-chunk before `data`, stereo downmix, unsigned 8-bit, resampling — then synthesizes real speech
-and transcribes it through the real model. It also pins the silence case: whisper *hallucinates*
-on silence rather than returning nothing, so the gate checks the audio, not the transcript.
+---
 
-Both exist because bugs in this layer are invisible from the backend: `/api/chat` streamed
-correctly and SQLite stored every answer while the UI was showing nothing at all.
+## Known gaps
+
+The live-dictation thresholds are tuned but not yet validated against a range of real microphones;
+STT and TTS have no settings toggle (both self-disable instead); and a smaller weight quantization
+for the High tier — which still spills ~27% to CPU — remains untried.
+
+---
 
 ## Documentation
 
-This repo keeps its reasoning, not just its code:
+This repository keeps its reasoning, not just its code.
 
 - **[`docs/model-notes.md`](docs/model-notes.md)** — measured model behaviour: the KV-cache
-  arithmetic behind the context limit, per-tier throughput, and which latency levers actually
-  work (several do not)
-- **[`docs/rag-architecture.md`](docs/rag-architecture.md)** — the document/RAG design, and the
-  five seams built early so it lands as an addition rather than a rewrite
-- **[`docs/voice-architecture.md`](docs/voice-architecture.md)** — the Phase 5 (voice) design:
-  the STT/TTS boundary shape, why whisper.cpp/Piper are spawned per-request rather than run as
-  a service, and what's still an open question
+  arithmetic behind the context limit, per-tier throughput, and which latency levers actually work
+  (several do not)
+- **[`docs/rag-architecture.md`](docs/rag-architecture.md)** — the document/RAG design, and the five
+  seams built early so retrieval landed as an addition rather than a rewrite
+- **[`docs/voice-architecture.md`](docs/voice-architecture.md)** — the STT/TTS boundary shape and
+  what remained open
 
-The build plan and the session-by-session work log are kept locally rather than published —
-they record hardware specifics and local paths. Commit messages carry the reasoning behind
-each phase.
+Commit messages carry the reasoning behind each phase.
+
+---
 
 ## License
 

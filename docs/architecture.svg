@@ -1,0 +1,251 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 900" width="1180" height="900"
+     role="img" aria-label="Arthur system architecture">
+  <title>Arthur — system architecture</title>
+  <desc>Browser UI over an Express server that owns ingest, retrieval, context building and
+        inference, backed by one SQLite file and a local Ollama server.</desc>
+
+  <defs>
+    <marker id="ar-cy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#38bdf8"/>
+    </marker>
+    <marker id="ar-am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#f59e0b"/>
+    </marker>
+    <marker id="ar-gr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#34d399"/>
+    </marker>
+    <marker id="ar-sl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <style>
+    .bg    { fill: #0b1220 }
+    .panel { fill: #101a2e; stroke: #22314f; stroke-width: 1.25; rx: 12 }
+    .sub   { fill: #0d1526; stroke: #1e2b47; stroke-width: 1; rx: 10 }
+    .box   { fill: #17223b; stroke: #2c3d63; stroke-width: 1.1; rx: 8 }
+    .hot   { fill: #1d1a2e; stroke: #7c3aed; stroke-width: 1.2; rx: 8 }
+    .fire  { fill: #241a17; stroke: #ea580c; stroke-width: 1.2; rx: 8 }
+
+    text { font-family: ui-sans-serif, "Segoe UI", Roboto, Helvetica, Arial, sans-serif }
+    .plabel { font-size: 13px; font-weight: 700; fill: #f8fafc; letter-spacing: 1.6px }
+    .pnote  { font-size: 10.5px; fill: #7e8ca8 }
+    .title  { font-size: 12.5px; font-weight: 700; fill: #e6edf7 }
+    .line   { font-size: 9.8px; fill: #93a2bd }
+    .mono   { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace }
+    .path   { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+              font-size: 9.6px; fill: #cbd5e1 }
+    .verb   { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+              font-size: 8.4px; fill: #38bdf8; letter-spacing: .8px }
+    .chip   { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+              font-size: 9.4px; fill: #cbd5e1 }
+    .wire   { fill: none; stroke-width: 1.8 }
+    .hint   { font-size: 9.6px; fill: #64748b }
+    .cap    { font-size: 11px; fill: #8b9ab5 }
+
+    /* Dashes crawl along each wire in the direction the data actually moves. */
+    .flow { stroke-dasharray: 7 6; animation: flow 1.1s linear infinite }
+    @keyframes flow { to { stroke-dashoffset: -13 } }
+    .flow-up { stroke-dasharray: 7 6; animation: flowup 1.1s linear infinite }
+    @keyframes flowup { to { stroke-dashoffset: 13 } }
+  </style>
+
+  <rect class="bg" x="0" y="0" width="1180" height="900"/>
+
+  <!-- ================================ CLIENT ================================ -->
+  <rect class="panel" x="40" y="50" width="1100" height="130"/>
+  <text class="plabel" x="60" y="76">CLIENT</text>
+  <text class="pnote"  x="128" y="76">chromeless Chrome window &#183; http://localhost:5178 &#183; no build server in production</text>
+
+  <rect class="box" x="60" y="94" width="336" height="68"/>
+  <text class="title" x="76" y="118">Chat UI</text>
+  <text class="line"  x="76" y="134">React 19 &#183; TypeScript &#183; Tailwind v4</text>
+  <text class="line"  x="76" y="149">SSE token render &#183; markdown &#183; thinking panel</text>
+
+  <rect class="box" x="420" y="94" width="336" height="68"/>
+  <text class="title" x="436" y="118">Knowledge panel</text>
+  <text class="line"  x="436" y="134">collections &#183; folder ingest &#183; document list</text>
+  <text class="line"  x="436" y="149">expandable citations under every answer</text>
+
+  <rect class="box" x="780" y="94" width="336" height="68"/>
+  <text class="title" x="796" y="118">Voice I/O</text>
+  <text class="line"  x="796" y="134">MediaRecorder &#8594; pause segmenter (live dictation)</text>
+  <text class="line"  x="796" y="149">speechSynthesis read-aloud, local voices only</text>
+
+  <!-- client &#8596; server -->
+  <path class="wire flow"    d="M260 180 L260 234" stroke="#38bdf8" marker-end="url(#ar-cy)"/>
+  <text class="hint" x="272" y="203">requests &#183; uploads &#183; audio</text>
+  <path class="wire flow-up" d="M920 234 L920 180" stroke="#34d399" marker-start="url(#ar-gr)"/>
+  <text class="hint" x="740" y="203" text-anchor="end">SSE: tokens, ingest progress, citations</text>
+
+  <!-- ================================ SERVER ================================ -->
+  <rect class="panel" x="40" y="240" width="1100" height="390"/>
+  <text class="plabel" x="60" y="266">SERVER</text>
+  <text class="pnote"  x="132" y="266">Express 5, one Node process &#183; serves the built UI and the API on the same origin, which is why there is no CORS anywhere</text>
+
+  <!-- routes -->
+  <rect class="sub" x="60"  y="282" width="186" height="40"/>
+  <text class="verb" x="72" y="299">POST</text>
+  <text class="path" x="72" y="313">/api/documents</text>
+
+  <rect class="sub" x="278" y="282" width="186" height="40"/>
+  <text class="verb" x="290" y="299">GET</text>
+  <text class="path" x="290" y="313">/api/collections/:id/search</text>
+
+  <rect class="sub" x="496" y="282" width="186" height="40"/>
+  <text class="verb" x="508" y="299">POST &#183; SSE</text>
+  <text class="path" x="508" y="313">/api/chat</text>
+
+  <rect class="sub" x="714" y="282" width="186" height="40"/>
+  <text class="verb" x="726" y="299">POST &#183; SSE</text>
+  <text class="path" x="726" y="313">/api/models/pull</text>
+
+  <rect class="sub" x="932" y="282" width="186" height="40"/>
+  <text class="verb" x="944" y="299">POST</text>
+  <text class="path" x="944" y="313">/api/transcribe</text>
+
+  <!-- route &#8594; stage -->
+  <g stroke="#3d4d6e" stroke-width="1" stroke-dasharray="3 4" marker-end="url(#ar-sl)">
+    <path d="M153  322 L153  350"/>
+    <path d="M371  322 L371  350"/>
+    <path d="M589  322 L589  350"/>
+    <path d="M807  322 L807  350"/>
+    <path d="M1025 322 L1025 350"/>
+  </g>
+
+  <!-- stages -->
+  <rect class="box" x="60" y="356" width="186" height="86"/>
+  <text class="title" x="74" y="379">Ingest</text>
+  <text class="line"  x="74" y="396">extract &#8594; chunk &#8594; embed</text>
+  <text class="line"  x="74" y="411">~500 tokens, page-aware</text>
+  <text class="line"  x="74" y="426">dedup by content hash</text>
+
+  <rect class="box" x="278" y="356" width="186" height="86"/>
+  <text class="title" x="292" y="379">Retrieval</text>
+  <text class="line"  x="292" y="396">FTS5 keyword + vector kNN</text>
+  <text class="line"  x="292" y="411">fused by reciprocal rank</text>
+  <text class="line"  x="292" y="426">RRF k=60, 20 per mode</text>
+
+  <rect class="box" x="496" y="356" width="186" height="86"/>
+  <text class="title" x="510" y="379">Context builder</text>
+  <text class="line"  x="510" y="396">8192-token budget</text>
+  <text class="line"  x="510" y="411">history + attachments +</text>
+  <text class="line"  x="510" y="426">collection, then citations</text>
+
+  <rect class="fire" x="714" y="356" width="186" height="86"/>
+  <text class="title" x="728" y="379">Inference boundary</text>
+  <text class="line"  x="728" y="396" font-family="ui-monospace, Consolas, monospace">sendMessage(conv, tier)</text>
+  <text class="line"  x="728" y="411">the one seam an online</text>
+  <text class="line"  x="728" y="426">mode would swap out</text>
+
+  <rect class="box" x="932" y="356" width="186" height="86"/>
+  <text class="title" x="946" y="379">Speech to text</text>
+  <text class="line"  x="946" y="396">WAV decode (any chunk</text>
+  <text class="line"  x="946" y="411">layout) &#8594; downmix &#8594;</text>
+  <text class="line"  x="946" y="426">resample &#8594; silence gate</text>
+
+  <!-- stage &#8594; stage -->
+  <g class="wire flow" stroke="#38bdf8" marker-end="url(#ar-cy)">
+    <path d="M246 399 L272 399"/>
+    <path d="M464 399 L490 399"/>
+    <path d="M682 399 L708 399"/>
+  </g>
+
+  <!-- ---------------------------- CPU workers ---------------------------- -->
+  <rect class="sub" x="60" y="470" width="1058" height="140"/>
+  <text class="plabel" x="78" y="492" font-size="11.5">CPU WORKERS</text>
+  <text class="pnote"  x="190" y="492">transformers.js / WASM, never Ollama &#8212; kept off the GPU on purpose, because the 4 GB of VRAM belongs to the chat model</text>
+
+  <rect class="hot" x="78"  y="504" width="243" height="88"/>
+  <text class="title" x="92" y="527">Extractors</text>
+  <text class="line"  x="92" y="544">pdf &#183; docx &#183; xlsx &#183; pptx &#183; html &#183; epub</text>
+  <text class="line"  x="92" y="559">+ ~60 text and source types</text>
+  <text class="line"  x="92" y="577">tables survive as tables</text>
+
+  <rect class="hot" x="337" y="504" width="243" height="88"/>
+  <text class="title" x="351" y="527">OCR</text>
+  <text class="line"  x="351" y="544">tesseract.js (pure WASM)</text>
+  <text class="line"  x="351" y="559">images pulled straight from the PDF,</text>
+  <text class="line"  x="351" y="577">wrapped by a 60-line PNG encoder</text>
+
+  <rect class="hot" x="596" y="504" width="243" height="88"/>
+  <text class="title" x="610" y="527">Embeddings</text>
+  <text class="line"  x="610" y="544">bge-small-en-v1.5 &#183; 384-dim</text>
+  <text class="line"  x="610" y="559">ONNX runtime, CPU only</text>
+  <text class="line"  x="610" y="577">zero VRAM contention with chat</text>
+
+  <rect class="hot" x="855" y="504" width="243" height="88"/>
+  <text class="title" x="869" y="527">Speech model</text>
+  <text class="line"  x="869" y="544">whisper-tiny.en &#183; ONNX</text>
+  <text class="line"  x="869" y="559">~3.7&#215; realtime on this machine</text>
+  <text class="line"  x="869" y="577">phrase-sized clips, not a stream</text>
+
+  <!-- stage &#8594; worker -->
+  <g stroke="#3d4d6e" stroke-width="1" stroke-dasharray="3 4" marker-end="url(#ar-sl)">
+    <path d="M153  442 L153  500"/>
+    <path d="M371  442 L371  500"/>
+    <path d="M1025 442 L1025 500"/>
+  </g>
+
+  <!-- server &#8594; storage / ollama -->
+  <path class="wire flow" d="M350 630 L350 684" stroke="#38bdf8" marker-end="url(#ar-cy)"/>
+  <text class="hint" x="362" y="653">read &#183; write &#183; index</text>
+  <path class="wire flow" d="M920 630 L920 684" stroke="#f59e0b" marker-end="url(#ar-am)"/>
+  <text class="hint" x="932" y="653">streamed completion</text>
+
+  <!-- =============================== STORAGE =============================== -->
+  <rect class="panel" x="40" y="690" width="620" height="170"/>
+  <text class="plabel" x="60" y="716">STORAGE</text>
+  <text class="pnote"  x="140" y="716">arthur.db &#8212; one SQLite file, WAL</text>
+
+  <rect class="box" x="60"  y="728" width="136" height="42"/>
+  <text class="chip" x="128" y="754" text-anchor="middle">conversations</text>
+  <rect class="box" x="208" y="728" width="136" height="42"/>
+  <text class="chip" x="276" y="754" text-anchor="middle">messages</text>
+  <rect class="box" x="356" y="728" width="136" height="42"/>
+  <text class="chip" x="424" y="754" text-anchor="middle">documents</text>
+  <rect class="box" x="504" y="728" width="136" height="42"/>
+  <text class="chip" x="572" y="754" text-anchor="middle">collections</text>
+
+  <rect class="box" x="60"  y="778" width="185" height="48"/>
+  <text class="chip" x="152" y="797" text-anchor="middle">chunks</text>
+  <text class="line" x="152" y="812" text-anchor="middle">text + page + doc</text>
+
+  <rect class="box" x="258" y="778" width="185" height="48"/>
+  <text class="chip" x="350" y="797" text-anchor="middle">chunks_fts</text>
+  <text class="line" x="350" y="812" text-anchor="middle">FTS5, contentless_delete=1</text>
+
+  <rect class="box" x="456" y="778" width="185" height="48"/>
+  <text class="chip" x="548" y="797" text-anchor="middle">chunk_vectors</text>
+  <text class="line" x="548" y="812" text-anchor="middle">sqlite-vec vec0 float[384]</text>
+
+  <text class="hint" x="60" y="846">Index tables are virtual, so no foreign key can reach them &#8212; orphans are pruned at startup.</text>
+
+  <!-- =============================== OLLAMA ================================ -->
+  <rect class="panel" x="700" y="690" width="440" height="170"/>
+  <text class="plabel" x="720" y="716">MODEL RUNTIME</text>
+  <text class="pnote"  x="838" y="716">Ollama tray server &#183; 127.0.0.1:11434</text>
+
+  <rect class="fire" x="720" y="728" width="125" height="42"/>
+  <text class="line" x="782" y="745" text-anchor="middle" fill="#fbbf24">Low</text>
+  <text class="chip" x="782" y="760" text-anchor="middle">qwen2.5:1.5b</text>
+
+  <rect class="fire" x="857" y="728" width="125" height="42"/>
+  <text class="line" x="919" y="745" text-anchor="middle" fill="#fbbf24">Medium</text>
+  <text class="chip" x="919" y="760" text-anchor="middle">llama3.2:3b</text>
+
+  <rect class="fire" x="994" y="728" width="125" height="42"/>
+  <text class="line" x="1056" y="745" text-anchor="middle" fill="#fbbf24">High</text>
+  <text class="chip" x="1056" y="760" text-anchor="middle">qwen3:4b</text>
+
+  <rect class="box" x="720" y="778" width="400" height="48"/>
+  <text class="title" x="920" y="797" text-anchor="middle">GTX 1650 Ti &#183; 4 GB VRAM</text>
+  <text class="line"  x="920" y="812" text-anchor="middle">one model resident at a time &#8212; switching tier costs a reload</text>
+
+  <text class="hint" x="720" y="846">Arthur never spawns `ollama serve` &#8212; a second server crash-loops the tray app.</text>
+
+  <!-- ================================ CAPTION =============================== -->
+  <text class="cap" x="590" y="884" text-anchor="middle">
+    Every box above runs on one machine. The only network call Arthur ever makes is pulling a model.
+  </text>
+</svg>
