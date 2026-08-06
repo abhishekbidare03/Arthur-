@@ -36,11 +36,100 @@ export function loadVectorExtension(): void {
   // the text a second time here is a few KB per document — trivial next to a
   // model file — and it means BM25 search never has to join back to `chunks`
   // just to read what it already matched against.
+  //
+  // `contentless_delete=1` is load-bearing, not a flourish. A plain contentless
+  // FTS5 table rejects `DELETE` outright ("cannot DELETE from contentless fts5
+  // table"), which meant the cleanup path below could never run — see the
+  // migration note under `rebuildFtsIfStale`.
   db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-    text, content=''
+    text, content='', contentless_delete=1
   )`)
 
+  rebuildFtsIfStale()
+  pruneOrphanedIndexRows()
+
   loaded = true
+}
+
+/**
+ * Recreates `chunks_fts` if it predates `contentless_delete=1`.
+ *
+ * `CREATE VIRTUAL TABLE IF NOT EXISTS` is a no-op against an existing table
+ * with different options, so a database created before that flag keeps a table
+ * that cannot be deleted from — silently, until a delete is attempted.
+ *
+ * Dropping it is safe: this table is a derived index, rebuildable from
+ * `chunks`, which holds the authoritative text. The rows are restored below
+ * from `chunks` itself rather than being lost.
+ */
+function rebuildFtsIfStale(): void {
+  const existing = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'`)
+    .get() as { sql?: string } | undefined
+
+  if (!existing?.sql || existing.sql.includes('contentless_delete')) return
+
+  db.exec(`DROP TABLE chunks_fts`)
+  db.exec(`CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='', contentless_delete=1)`)
+
+  const insert = db.prepare(`INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)`)
+  const rows = db.prepare(`SELECT rowid, text FROM chunks`).all() as {
+    rowid: number
+    text: string
+  }[]
+  const restore = db.transaction((all: typeof rows) => {
+    for (const row of all) insert.run(BigInt(row.rowid), row.text)
+  })
+  restore(rows)
+
+  console.log(`[vectors] rebuilt chunks_fts with contentless_delete (${rows.length} chunks)`)
+}
+
+/**
+ * Deletes index rows whose `chunks` row is gone.
+ *
+ * **This is the invariant that broke retrieval entirely**, and it is worth
+ * stating plainly because the failure was invisible.
+ *
+ * `chunk_vectors` and `chunks_fts` are virtual tables. Virtual tables cannot
+ * participate in a foreign key, so when deleting a conversation cascades
+ * `documents` → `chunks`, both indexes keep every row. SQLite then *reuses*
+ * the freed `chunks.rowid` values for the next document — and since those
+ * rowids are still occupied in `chunk_vectors`, indexing fails on a UNIQUE
+ * constraint. Every upload after the first conversation deletion was falling
+ * back to truncation, permanently, with nothing on screen to say so.
+ *
+ * Reconciling at startup makes the invariant self-healing regardless of what
+ * cascaded while the process was down. The per-row overwrite in
+ * `insertChunkVector` covers the same collision happening *during* a session.
+ */
+export function pruneOrphanedIndexRows(): number {
+  const orphans = db
+    .prepare(
+      `SELECT v.rowid AS rowid FROM chunk_vectors v
+       WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.rowid = v.rowid)`,
+    )
+    .all() as { rowid: number }[]
+
+  const ftsOrphans = db
+    .prepare(
+      `SELECT f.rowid AS rowid FROM chunks_fts f
+       WHERE NOT EXISTS (SELECT 1 FROM chunks c WHERE c.rowid = f.rowid)`,
+    )
+    .all() as { rowid: number }[]
+
+  const dropVector = db.prepare(`DELETE FROM chunk_vectors WHERE rowid = ?`)
+  const dropText = db.prepare(`DELETE FROM chunks_fts WHERE rowid = ?`)
+
+  const run = db.transaction(() => {
+    for (const { rowid } of orphans) dropVector.run(BigInt(rowid))
+    for (const { rowid } of ftsOrphans) dropText.run(BigInt(rowid))
+  })
+  run()
+
+  const total = orphans.length + ftsOrphans.length
+  if (total > 0) console.log(`[vectors] pruned ${total} orphaned index rows`)
+  return total
 }
 
 function toBuffer(vector: Float32Array): Buffer {
@@ -53,8 +142,20 @@ function toBuffer(vector: Float32Array): Buffer {
 // there yet throws — every function below calls it first (a cheap no-op
 // after the first call) so import order can never matter here.
 
+/*
+ * Both inserts clear the rowid first.
+ *
+ * A rowid arriving here is one SQLite has *just* assigned to a new `chunks`
+ * row, so anything already sitting at it belongs to a chunk that no longer
+ * exists — an orphan left behind by a cascade that could not reach these
+ * virtual tables. Overwriting is therefore always the correct reading, and it
+ * is what stops a stale row turning into a UNIQUE constraint failure that
+ * disables indexing for the rest of the database's life.
+ */
+
 export function insertChunkVector(rowid: number, embedding: Float32Array): void {
   loadVectorExtension()
+  db.prepare(`DELETE FROM chunk_vectors WHERE rowid = ?`).run(BigInt(rowid))
   db.prepare(`INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)`).run(
     BigInt(rowid),
     toBuffer(embedding),
@@ -63,6 +164,7 @@ export function insertChunkVector(rowid: number, embedding: Float32Array): void 
 
 export function insertChunkText(rowid: number, text: string): void {
   loadVectorExtension()
+  db.prepare(`DELETE FROM chunks_fts WHERE rowid = ?`).run(BigInt(rowid))
   db.prepare(`INSERT INTO chunks_fts (rowid, text) VALUES (?, ?)`).run(BigInt(rowid), text)
 }
 

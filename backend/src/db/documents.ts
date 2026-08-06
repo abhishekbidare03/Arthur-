@@ -83,6 +83,18 @@ const stmts = {
   `),
 
   setStatus: db.prepare(`UPDATE documents SET status = @status WHERE id = @id`),
+
+  /** Anything that never finished indexing. Drives the startup repair pass in
+   *  `rag/ingest.ts` — a document stuck here silently falls back to
+   *  truncation, so it must not be left stuck. */
+  needingIndex: db.prepare(`
+    SELECT id, conversation_id AS conversationId, filename, mime,
+           byte_size AS byteSize, sha256, storage_path AS storagePath,
+           extracted_text_path AS extractedTextPath, page_count AS pageCount,
+           status, created_at AS createdAt
+    FROM documents WHERE status != 'indexed'
+    ORDER BY created_at
+  `),
 }
 
 export interface AttachmentSummary {
@@ -144,6 +156,10 @@ export function claimDocument(id: string, conversationId: string): void {
  *  success, `failed` if chunking or embedding blows up partway. */
 export function setDocumentStatus(id: string, status: DocumentRow['status']): void {
   stmts.setStatus.run({ id, status })
+}
+
+export function documentsNeedingIndex(): DocumentRow[] {
+  return stmts.needingIndex.all() as DocumentRow[]
 }
 
 export function linkMessageDocument(messageId: string, documentId: string): void {

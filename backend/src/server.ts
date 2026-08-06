@@ -19,7 +19,7 @@ import {
 } from './db/documents.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
 import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
-import { ingestDocument } from './rag/ingest.ts'
+import { ingestDocument, reindexPending } from './rag/ingest.ts'
 import { warmEmbeddings } from './rag/embed.ts'
 import { MAX_AUDIO_SECONDS, transcribe, warmTranscription } from './voice/transcribe.ts'
 import { UnreadableAudioError } from './voice/types.ts'
@@ -659,8 +659,11 @@ const server = app.listen(PORT, '127.0.0.1', () => {
       : `Arthur backend  →  http://127.0.0.1:${PORT}`,
   )
   // Loads the embedding model in the background so the first upload or the
-  // first retrieval isn't the request that pays the cold-start cost.
+  // first retrieval isn't the request that pays the cold-start cost, then
+  // repairs any document left unindexed by an earlier failure. Both are
+  // deliberately after `listen`: neither should delay the app being usable.
   warmEmbeddings()
+  void reindexPending()
 })
 
 // A stale copy still holding the port is the most likely startup failure once

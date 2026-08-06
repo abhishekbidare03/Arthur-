@@ -8,7 +8,7 @@
     "start": "tsx src/server.ts",
     "serve": "tsx src/server.ts --app",
     "typecheck": "tsc --noEmit",
-    "test": "tsx extractors.test.mts && tsx buildContext.test.mts && tsx rag.test.mts && tsx voice.test.mts"
+    "test": "tsx extractors.test.mts && tsx buildContext.test.mts && tsx rag.test.mts && tsx index-integrity.test.mts && tsx voice.test.mts"
   },
   "dependencies": {
     "@types/better-sqlite3": "^9.6.0",
