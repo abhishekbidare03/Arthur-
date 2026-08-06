@@ -158,6 +158,12 @@ export function setDocumentStatus(id: string, status: DocumentRow['status']): vo
   stmts.setStatus.run({ id, status })
 }
 
+/** Removes a document. `chunks` and `message_documents` cascade; the vector and
+ *  FTS index rows do not — the caller prunes them. */
+export function deleteDocument(id: string): boolean {
+  return db.prepare('DELETE FROM documents WHERE id = ?').run(id).changes > 0
+}
+
 export function documentsNeedingIndex(): DocumentRow[] {
   return stmts.needingIndex.all() as DocumentRow[]
 }

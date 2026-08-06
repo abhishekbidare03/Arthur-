@@ -14,12 +14,27 @@ import {
   attachmentsForConversation,
   attachmentsForMessage,
   claimDocument,
+  deleteDocument,
   getDocument,
   linkMessageDocument,
 } from './db/documents.ts'
+import {
+  conversationCollection,
+  createCollection,
+  deleteCollection,
+  documentsInCollection,
+  getCollection,
+  indexedDocumentIds,
+  listCollections,
+  setConversationCollection,
+  updateCollection,
+} from './db/collections.ts'
+import { pruneOrphanedIndexRows } from './db/vectors.ts'
+import { ingestFolder } from './rag/folder.ts'
+import { retrieveChunks } from './rag/retrieve.ts'
 import { UnreadableFileError, UnsupportedFileError } from './documents/extractors/index.ts'
 import { readDocumentText, readDocumentTexts, storeUpload } from './documents/store.ts'
-import { ingestDocument, reindexPending } from './rag/ingest.ts'
+import { ingestDocument, reindexDocument, reindexPending } from './rag/ingest.ts'
 import { recordSources, sourcesForConversation } from './db/sources.ts'
 import { warmEmbeddings } from './rag/embed.ts'
 import { MAX_AUDIO_SECONDS, transcribe, warmTranscription } from './voice/transcribe.ts'
@@ -164,17 +179,38 @@ app.get('/api/conversations/:id/messages', (req, res) => {
 })
 
 app.patch('/api/conversations/:id', (req, res) => {
-  const { title } = req.body as { title?: unknown }
-  if (typeof title !== 'string' || title.trim().length === 0) {
-    res.status(400).json({ error: 'title must be a non-empty string.' })
-    return
-  }
-  const updated = renameConversation(req.params.id, title.trim().slice(0, 200))
-  if (!updated) {
+  const { title, collectionId } = req.body as { title?: unknown; collectionId?: unknown }
+
+  if (!getConversation(req.params.id)) {
     res.status(404).json({ error: 'No such conversation.' })
     return
   }
-  res.json(updated)
+
+  // Linking to a collection and renaming arrive on the same route because they
+  // are the same kind of edit to the same row, and `collectionId: null` is a
+  // meaningful value (unlink) that a separate DELETE would express worse.
+  if (collectionId !== undefined) {
+    if (collectionId !== null && typeof collectionId !== 'string') {
+      res.status(400).json({ error: 'collectionId must be a string or null.' })
+      return
+    }
+    if (typeof collectionId === 'string' && !getCollection(collectionId)) {
+      res.status(400).json({ error: 'No such collection.' })
+      return
+    }
+    setConversationCollection(req.params.id, collectionId)
+  }
+
+  if (title !== undefined) {
+    if (typeof title !== 'string' || title.trim().length === 0) {
+      res.status(400).json({ error: 'title must be a non-empty string.' })
+      return
+    }
+    renameConversation(req.params.id, title.trim().slice(0, 200))
+  }
+
+  const updated = getConversation(req.params.id)!
+  res.json({ ...updated, collectionId: conversationCollection(req.params.id) })
 })
 
 app.delete('/api/conversations/:id', (req, res) => {
@@ -185,7 +221,187 @@ app.delete('/api/conversations/:id', (req, res) => {
   res.status(204).end()
 })
 
+/* ------------------------------------------------------------- collections -- */
+
+app.get('/api/collections', (_req, res) => {
+  res.json(listCollections())
+})
+
+app.post('/api/collections', (req, res) => {
+  const { name, description } = req.body as { name?: unknown; description?: unknown }
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    res.status(400).json({ error: 'A collection needs a name.' })
+    return
+  }
+  res.status(201).json(
+    createCollection(
+      name.trim().slice(0, 120),
+      typeof description === 'string' ? description.trim().slice(0, 500) : undefined,
+    ),
+  )
+})
+
+app.patch('/api/collections/:id', (req, res) => {
+  const { name, description } = req.body as { name?: unknown; description?: unknown }
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    res.status(400).json({ error: 'A collection needs a name.' })
+    return
+  }
+  const updated = updateCollection(
+    req.params.id,
+    name.trim().slice(0, 120),
+    typeof description === 'string' ? description.trim().slice(0, 500) : undefined,
+  )
+  if (!updated) {
+    res.status(404).json({ error: 'No such collection.' })
+    return
+  }
+  res.json(updated)
+})
+
+app.delete('/api/collections/:id', (req, res) => {
+  if (!deleteCollection(req.params.id)) {
+    res.status(404).json({ error: 'No such collection.' })
+    return
+  }
+  // The documents cascaded away, and with them their chunks — but not the
+  // index rows those chunks were keyed to, which no foreign key can reach.
+  // Pruning here rather than waiting for the next restart keeps the invariant
+  // true within the session too.
+  pruneOrphanedIndexRows()
+  res.status(204).end()
+})
+
+app.get('/api/collections/:id/documents', (req, res) => {
+  if (!getCollection(req.params.id)) {
+    res.status(404).json({ error: 'No such collection.' })
+    return
+  }
+  res.json(
+    documentsInCollection(req.params.id).map((d) => ({
+      id: d.id,
+      filename: d.filename,
+      byteSize: d.byteSize,
+      pageCount: d.pageCount,
+      status: d.status,
+      createdAt: d.createdAt,
+    })),
+  )
+})
+
+/**
+ * Search a collection without asking a question.
+ *
+ * The same hybrid retrieval the chat path uses, exposed directly. Worth having
+ * separately: "which of my notes mentions this?" is a different task from
+ * "answer this", it needs no model loaded, and it returns in milliseconds where
+ * a generated answer takes seconds.
+ */
+app.get('/api/collections/:id/search', async (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+  if (!getCollection(req.params.id)) {
+    res.status(404).json({ error: 'No such collection.' })
+    return
+  }
+  if (query.length === 0) {
+    res.json([])
+    return
+  }
+
+  try {
+    // A generous budget: this is for reading, not for fitting in a context
+    // window, so the limit is what a person will scroll rather than what a
+    // model can hold.
+    const hits = await retrieveChunks(indexedDocumentIds(req.params.id), query, 4_000)
+    res.json(hits)
+  } catch (error) {
+    console.error('[collections] search failed:', error)
+    res.status(500).json({ error: 'The search failed.' })
+  }
+})
+
+/**
+ * Ingest a folder into a collection, streaming progress.
+ *
+ * The path is a *local* one, read by the backend. That is the feature: this
+ * process binds to 127.0.0.1, serves one person on their own machine, and the
+ * path is one they typed. See `rag/folder.ts` for what the guards are actually
+ * for (walking into `node_modules`, not an attacker).
+ */
+app.post('/api/collections/:id/ingest', async (req, res) => {
+  const { path } = req.body as { path?: unknown }
+  if (!getCollection(req.params.id)) {
+    res.status(404).json({ error: 'No such collection.' })
+    return
+  }
+  if (typeof path !== 'string' || path.trim().length === 0) {
+    res.status(400).json({ error: 'A folder path is required.' })
+    return
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  res.flushHeaders()
+
+  const send = (event: Record<string, unknown>) => {
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`)
+  }
+
+  try {
+    const result = await ingestFolder(path.trim(), req.params.id, (progress) => send({ ...progress }))
+    send({ stage: 'complete', ...result })
+  } catch (error) {
+    // A path that does not exist is the overwhelmingly likely failure, and the
+    // message says which path rather than "ENOENT".
+    const message =
+      error instanceof Error && 'code' in error && error.code === 'ENOENT'
+        ? `No folder at ${path}`
+        : error instanceof Error
+          ? error.message
+          : 'The folder could not be read.'
+    send({ stage: 'error', error: message })
+  } finally {
+    if (!res.writableEnded) res.end()
+  }
+})
+
 /* --------------------------------------------------------------- documents -- */
+
+/** Re-index one document from the bytes already stored. The document manager's
+ *  remedy for a file that failed, and the way to pick up a better extractor
+ *  after an upgrade without re-uploading anything. */
+app.post('/api/documents/:id/reindex', async (req, res) => {
+  const row = getDocument(req.params.id)
+  if (!row) {
+    res.status(404).json({ error: 'No such document.' })
+    return
+  }
+  try {
+    await reindexDocument(row)
+    res.json({ id: row.id, status: getDocument(row.id)?.status ?? 'failed' })
+  } catch (error) {
+    console.error('[documents] re-index failed:', error)
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'The document could not be re-indexed.',
+    })
+  }
+})
+
+app.delete('/api/documents/:id', (req, res) => {
+  if (!getDocument(req.params.id)) {
+    res.status(404).json({ error: 'No such document.' })
+    return
+  }
+  deleteDocument(req.params.id)
+  // Same reason as deleting a collection: the chunks cascaded, their index
+  // rows cannot.
+  pruneOrphanedIndexRows()
+  res.status(204).end()
+})
 
 /**
  * Upload a file.
@@ -622,6 +838,13 @@ app.post('/api/chat', async (req, res) => {
   let cited: { chunkId: string; score: number }[] = []
 
   try {
+    // A linked collection answers every turn in this conversation, without
+    // anything being re-attached. Resolved per request rather than cached: the
+    // collection can grow between turns, and a chat linked to a folder that was
+    // just re-scanned should see what was added.
+    const linkedId = conversation.collectionId
+    const linked = linkedId ? getCollection(linkedId) : undefined
+
     const stream = sendMessage(
       {
         messages: [
@@ -629,6 +852,9 @@ app.post('/api/chat', async (req, res) => {
           { role: 'user', content, ...(attachments.length > 0 ? { attachments } : {}) },
         ],
         tier,
+        ...(linked
+          ? { collection: { name: linked.name, documentIds: indexedDocumentIds(linked.id) } }
+          : {}),
       },
       controller.signal,
     )

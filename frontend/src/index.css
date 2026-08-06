@@ -979,6 +979,81 @@
     color: var(--text-tertiary);
   }
 
+  /* Knowledge panel. */
+  .collection-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.4rem 0.55rem;
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out);
+  }
+  .collection-item:hover {
+    background: var(--fill-hover);
+  }
+  .collection-item[data-active] {
+    background: var(--fill-hover);
+    color: var(--accent);
+  }
+
+  .doc-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.15rem;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .doc-row:last-child {
+    border-bottom: none;
+  }
+
+  .divider-v {
+    width: 1px;
+    flex-shrink: 0;
+    background: var(--border-default);
+  }
+
+  .field {
+    padding: 0.3rem 0.5rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-default);
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-size: 12.5px;
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+  .field:disabled {
+    opacity: 0.6;
+  }
+
+  /* Editable in place, but not obviously a text box until focused - the
+     collection name is a heading first and a field second. */
+  .field-plain {
+    padding: 0.15rem 0.3rem;
+    margin-left: -0.3rem;
+    border-radius: var(--radius-md);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-primary);
+  }
+  .field-plain:hover {
+    border-color: var(--border-default);
+  }
+  .field-plain:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: var(--surface-2);
+  }
+
   /* A retrieved passage, shown verbatim. The left rule marks it as quoted
      source material rather than something Arthur wrote. */
   .citation {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ChatPane from './components/ChatPane'
 import InputBar from './components/InputBar'
+import KnowledgePanel from './components/KnowledgePanel'
 import ModelSetup from './components/ModelSetup'
 import OllamaBanner from './components/OllamaBanner'
 import ShortcutsHelp from './components/ShortcutsHelp'
@@ -11,12 +12,15 @@ import { downloadConversation } from './export'
 import {
   checkHealth,
   deleteConversation as apiDeleteConversation,
+  fetchCollections,
   fetchConversations,
   fetchMessages,
+  linkConversation,
   renameConversation as apiRenameConversation,
   streamChat,
   uploadDocument,
   UploadError,
+  type Collection,
   type HealthStatus,
 } from './api'
 import {
@@ -68,6 +72,8 @@ export default function App() {
   const [pending, setPending] = useState<Attachment[]>([])
   const [dragging, setDragging] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
+  const [showKnowledge, setShowKnowledge] = useState(false)
+  const [collections, setCollections] = useState<Collection[]>([])
 
   /**
    * The composer's dictation toggle, so Ctrl+Shift+M can reach it.
@@ -95,7 +101,7 @@ export default function App() {
     setHealth(await checkHealth())
   }, [])
 
-  // Initial load: conversation list and Ollama status.
+  // Initial load: conversation list, collections and Ollama status.
   useEffect(() => {
     void refreshHealth()
     void fetchConversations()
@@ -103,6 +109,9 @@ export default function App() {
       .catch(() => {
         // The backend is down; the banner already covers this case.
       })
+    void fetchCollections()
+      .then(setCollections)
+      .catch(() => {})
   }, [refreshHealth])
 
   // Abort any in-flight generation if the window goes away, so the model is not
@@ -113,6 +122,9 @@ export default function App() {
     () => (activeId ? (messagesByConversation[activeId] ?? []) : []),
     [activeId, messagesByConversation],
   )
+
+  const activeConversation = conversations.find((c) => c.id === activeId)
+  const linkedCollection = collections.find((c) => c.id === activeConversation?.collectionId)
 
   // Selecting a conversation adopts the tier it was last used with, so reopening
   // an old chat never silently answers at a different effort level.
@@ -507,6 +519,27 @@ export default function App() {
     void runTurn({ text: '', tier: at, regenerate: true })
   }
 
+  /**
+   * Links (or unlinks) the open conversation to a collection.
+   *
+   * Optimistic, and reverted on failure — the checkbox is the kind of control
+   * that has to respond instantly or it reads as broken, and the cost of being
+   * wrong is one checkbox flipping back.
+   */
+  async function handleLinkCollection(collectionId: string | null) {
+    if (!activeId) return
+    const previous = conversations
+    setConversations((prev) =>
+      prev.map((c) => (c.id === activeId ? { ...c, collectionId } : c)),
+    )
+    try {
+      await linkConversation(activeId, collectionId)
+      setCollections(await fetchCollections())
+    } catch {
+      setConversations(previous)
+    }
+  }
+
   function handleExport() {
     const conversation = conversations.find((c) => c.id === activeId)
     if (!conversation || activeMessages.length === 0) return
@@ -561,6 +594,10 @@ export default function App() {
         case 'b':
           e.preventDefault()
           setCollapsed((v) => !v)
+          break
+        case 'k':
+          e.preventDefault()
+          setShowKnowledge((v) => !v)
           break
         case '1':
         case '2':
@@ -646,6 +683,8 @@ export default function App() {
           installed={health?.installed}
           onExport={activeId && activeMessages.length > 0 ? handleExport : undefined}
           onShowShortcuts={() => setShowShortcuts(true)}
+          onOpenKnowledge={() => setShowKnowledge(true)}
+          linkedCollection={linkedCollection?.name}
         />
 
         {isEmptyState ? (
@@ -719,6 +758,20 @@ export default function App() {
       </div>
 
       {showShortcuts && <ShortcutsHelp onClose={() => setShowShortcuts(false)} />}
+
+      {showKnowledge && (
+        <KnowledgePanel
+          onClose={() => {
+            setShowKnowledge(false)
+            // The panel can create, delete or fill collections, and the sidebar
+            // badge reads from this list.
+            void fetchCollections().then(setCollections).catch(() => {})
+          }}
+          activeConversationId={activeId}
+          activeCollectionId={activeConversation?.collectionId ?? null}
+          onLink={(id) => void handleLinkCollection(id)}
+        />
+      )}
     </div>
   )
 }

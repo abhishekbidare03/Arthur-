@@ -20,7 +20,8 @@ VRAM**, which drives most of the design decisions in this repo.
 | 6 | Packaging & launcher | ✅ Complete |
 | 7 | Polish | ✅ Complete |
 | 8 | RAG core (chunking, embeddings, hybrid retrieval) | ✅ Complete |
-| 9–10 | Collections, advanced formats | ⬜ |
+| 9 | Collections / knowledge base | ✅ Complete |
+| 10 | Advanced formats | ⬜ |
 
 Working chat with real streamed responses across three effort tiers, with durable local
 history in SQLite. Conversations survive restarts; rename and delete from the sidebar.
@@ -75,6 +76,26 @@ work is made of.
 Scanned PDFs with no text layer, and image-only decks, are refused by name rather than attached
 empty — OCR arrives in Phase 10. `.docx` and `.xlsx` name their phase; legacy `.doc`/`.ppt`/`.xls`
 say to re-save instead.
+
+## Collections
+
+Build a document set once and reuse it. Point a collection at a **folder** (`Ctrl+K`) and Arthur
+walks it, reads what it can, and indexes it — skipping `node_modules`, `.git`, build output and
+binaries rather than drowning the collection in them. Re-scan any time: files are recognised by
+content, so an unchanged one costs a single read and nothing else.
+
+Link a chat to a collection and every turn answers from it — **nothing attached, nothing
+re-uploaded**. The passages come back as citations like any other retrieval, so you can see what
+the answer was built from. Collection material is marked as reference material rather than as an
+attached file, so the model doesn't describe your notes as "the document you sent me".
+
+You can also just **search** a collection without asking anything. Same hybrid retrieval, no
+model loaded, results in milliseconds — "which of my notes mentions this?" is a different
+question from "answer this".
+
+The document list shows what's actually searchable. A file that failed to index says **"not
+searchable"** rather than showing a neutral badge, because to retrieval it may as well not
+exist; re-index or remove it from there.
 
 ## Voice
 
@@ -232,6 +253,18 @@ that a query about one page's fact returns that page's chunk and not the others;
 search finds an exact code; that a tight token budget is never exceeded; and that
 `buildContext` falls back from truncation to retrieval for an oversized *indexed* file while
 still truncating one that isn't.
+
+`backend/index-integrity.test.mts` pins a bug that silently disabled retrieval for a whole
+phase. `chunk_vectors` and `chunks_fts` are virtual tables, which cannot participate in a foreign
+key — so deleting a conversation cascaded away its chunks while both indexes kept every row, and
+SQLite then reused those rowids for the next document and failed on a UNIQUE constraint. The test
+ingests, cascade-deletes, asserts the stranding actually happens, then re-ingests onto the freed
+rowids.
+
+`backend/collections.test.mts` covers folder ingest with real files: that the walk skips
+`node_modules` and binaries, that a re-scan recognises unchanged files instead of re-embedding
+them, that ingesting a folder **cannot steal a document row a conversation owns**, and that a
+linked collection's passages reach the prompt with nothing attached to the message.
 
 Two jsdom tests, both asserting against the rendered DOM:
 

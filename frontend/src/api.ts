@@ -111,6 +111,120 @@ export async function checkHealth(): Promise<HealthStatus> {
   }
 }
 
+/* ----------------------------------------------------------- collections -- */
+
+export interface Collection {
+  id: string
+  name: string
+  description?: string
+  createdAt: string
+  documentCount: number
+  /** How many are actually searchable. A collection whose files all failed to
+   *  index looks identical to a working one without this. */
+  indexedCount: number
+}
+
+export interface CollectionDocument {
+  id: string
+  filename: string
+  byteSize: number
+  pageCount?: number
+  status: 'pending' | 'extracted' | 'indexed' | 'failed'
+  createdAt: string
+}
+
+export type IngestEvent =
+  | { stage: 'scanning' }
+  | { stage: 'file'; filename: string; seen: number; total: number; added: number; skipped: number; failed: number }
+  | { stage: 'done'; seen: number; total: number; added: number; skipped: number; failed: number }
+  | {
+      stage: 'complete'
+      added: number
+      unchanged: number
+      skipped: number
+      failed: { filename: string; reason: string }[]
+      truncated: boolean
+    }
+  | { stage: 'error'; error: string }
+
+export function fetchCollections(): Promise<Collection[]> {
+  return json<Collection[]>('/api/collections')
+}
+
+export function createCollection(name: string, description?: string): Promise<Collection> {
+  return json<Collection>('/api/collections', {
+    method: 'POST',
+    body: JSON.stringify({ name, description }),
+  })
+}
+
+export function updateCollection(
+  id: string,
+  name: string,
+  description?: string,
+): Promise<Collection> {
+  return json<Collection>(`/api/collections/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name, description }),
+  })
+}
+
+export function deleteCollection(id: string): Promise<void> {
+  return json<void>(`/api/collections/${id}`, { method: 'DELETE' })
+}
+
+export function fetchCollectionDocuments(id: string): Promise<CollectionDocument[]> {
+  return json<CollectionDocument[]>(`/api/collections/${id}/documents`)
+}
+
+export function searchCollection(id: string, query: string): Promise<Source[]> {
+  return json<Source[]>(`/api/collections/${id}/search?q=${encodeURIComponent(query)}`)
+}
+
+export function reindexDocument(id: string): Promise<{ id: string; status: string }> {
+  return json<{ id: string; status: string }>(`/api/documents/${id}/reindex`, { method: 'POST' })
+}
+
+export function deleteDocument(id: string): Promise<void> {
+  return json<void>(`/api/documents/${id}`, { method: 'DELETE' })
+}
+
+export function linkConversation(id: string, collectionId: string | null): Promise<Conversation> {
+  return json<Conversation>(`/api/conversations/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ collectionId }),
+  })
+}
+
+/** Walks a local folder on the backend and indexes what it can read. */
+export async function* ingestFolder(
+  collectionId: string,
+  path: string,
+  signal: AbortSignal,
+): AsyncGenerator<IngestEvent> {
+  let res: Response
+  try {
+    res = await fetch(`/api/collections/${collectionId}/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+      signal,
+    })
+  } catch (error) {
+    if (signal.aborted) return
+    yield { stage: 'error', error: error instanceof Error ? error.message : String(error) }
+    return
+  }
+
+  if (!res.ok || !res.body) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    yield { stage: 'error', error: body.error ?? `Ingest failed (HTTP ${res.status}).` }
+    return
+  }
+
+  for await (const event of readSse<IngestEvent>(res.body, signal)) yield event
+}
+
 /* ----------------------------------------------------------------- setup -- */
 
 export type PullEvent =

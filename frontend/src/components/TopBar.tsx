@@ -3,6 +3,7 @@ import { TIERS, tierInfo, type Tier } from '../types'
 import {
   ChevronDownIcon,
   DownloadIcon,
+  FolderIcon,
   KeyboardIcon,
   MoonIcon,
   SettingsIcon,
@@ -22,6 +23,9 @@ interface TopBarProps {
   onExport?: () => void
   /** Opens the keyboard-shortcut sheet. */
   onShowShortcuts?: () => void
+  onOpenKnowledge?: () => void
+  /** Name of the collection this chat answers from, if any. */
+  linkedCollection?: string
 }
 
 /**
@@ -37,6 +41,8 @@ export default function TopBar({
   installed,
   onExport,
   onShowShortcuts,
+  onOpenKnowledge,
+  linkedCollection,
 }: TopBarProps) {
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -154,6 +160,20 @@ export default function TopBar({
       </div>
 
       <div className="flex items-center gap-0.5">
+        {/* A chat answering from a collection is otherwise invisible — the
+            answers just quietly get better, or quietly cite files nobody
+            remembers attaching. */}
+        {linkedCollection && (
+          <button
+            className="meta-btn mr-1"
+            onClick={onOpenKnowledge}
+            title="This chat answers from this collection"
+          >
+            <FolderIcon className="h-3.5 w-3.5" />
+            {linkedCollection}
+          </button>
+        )}
+
         <button
           className="btn-icon"
           onClick={onToggleTheme}
@@ -180,6 +200,19 @@ export default function TopBar({
 
           {menuOpen && (
             <div role="menu" className="popover absolute right-0 top-full z-30 mt-1.5 w-[236px] py-1">
+              <button
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onOpenKnowledge?.()
+                }}
+              >
+                <FolderIcon className="h-4 w-4" />
+                <span className="flex-1 text-left">Knowledge</span>
+                <span className="kbd">Ctrl K</span>
+              </button>
+              <div className="divider my-1" />
               <button
                 role="menuitem"
                 className="menu-item"

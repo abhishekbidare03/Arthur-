@@ -14,6 +14,7 @@ const GROUPS: { title: string; items: [string[], string][] }[] = [
       [['Ctrl', 'N'], 'New chat'],
       [['Ctrl', 'E'], 'Export this conversation as Markdown'],
       [['Ctrl', 'B'], 'Show or hide the sidebar'],
+      [['Ctrl', 'K'], 'Knowledge collections'],
     ],
   },
   {

@@ -45,6 +45,17 @@ export async function storeUpload(input: {
   bytes: Buffer
   mime?: string
   conversationId?: string
+  /**
+   * Whether an existing row with these bytes may be handed back.
+   *
+   * True for chat attachments, where re-attaching a file should cost nothing.
+   * **False for collection ingest**, because the returned row would be one a
+   * *conversation* already owns — and assigning it to the collection would
+   * silently take it away from that chat, which would then answer about a file
+   * it no longer has. The bytes are still stored once either way; only the row
+   * is duplicated, and a row is a few hundred bytes.
+   */
+  reuseExisting?: boolean
 }): Promise<StoredDocument> {
   const sha256 = hash(input.bytes)
 
@@ -52,7 +63,7 @@ export async function storeUpload(input: {
   // leave no trace on disk and no row behind.
   const extracted = await extract(input.bytes, input.filename)
 
-  const existing = findExtractedByHash(sha256)
+  const existing = input.reuseExisting === false ? undefined : findExtractedByHash(sha256)
   if (existing) {
     // Same bytes, already ingested and already on disk. Re-read the cached text
     // rather than trusting that this upload extracted identically.

@@ -162,6 +162,8 @@ export interface Conversation {
   id: string
   title: string
   tier: Tier
+  /** The collection this chat answers from, if any. Phase 9. */
+  collectionId?: string | null
   createdAt: string
   updatedAt: string
 }

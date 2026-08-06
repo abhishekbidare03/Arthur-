@@ -15,6 +15,8 @@ export interface SendMessageInput {
   /** Each turn carries its own attachments, if any — see `HistoryMessage`. */
   messages: HistoryMessage[]
   tier: Tier
+  /** A knowledge collection this conversation answers from. Phase 9. */
+  collection?: { name: string; documentIds: string[] }
 }
 
 export interface GenerationStats {

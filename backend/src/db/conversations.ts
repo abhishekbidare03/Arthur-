@@ -12,6 +12,8 @@ export interface ConversationRow {
   id: string
   title: string
   tier: Tier
+  /** The collection this chat answers from, if any. Phase 9. */
+  collectionId: string | null
   createdAt: string
   updatedAt: string
 }
@@ -32,13 +34,15 @@ export interface MessageRow {
 
 const stmts = {
   listConversations: db.prepare(`
-    SELECT id, title, tier, created_at AS createdAt, updated_at AS updatedAt
+    SELECT id, title, tier, collection_id AS collectionId,
+           created_at AS createdAt, updated_at AS updatedAt
     FROM conversations
     ORDER BY updated_at DESC
   `),
 
   getConversation: db.prepare(`
-    SELECT id, title, tier, created_at AS createdAt, updated_at AS updatedAt
+    SELECT id, title, tier, collection_id AS collectionId,
+           created_at AS createdAt, updated_at AS updatedAt
     FROM conversations WHERE id = ?
   `),
 
@@ -100,10 +104,14 @@ export function createConversation(tier: Tier, title = 'New chat'): Conversation
     id: newId(),
     title,
     tier,
+    collectionId: null,
     createdAt: now(),
     updatedAt: now(),
   }
-  stmts.insertConversation.run(row)
+  // `collectionId` is not in the INSERT — a new chat is linked afterwards, via
+  // PATCH, if at all.
+  const { collectionId: _unused, ...insertable } = row
+  stmts.insertConversation.run(insertable)
   return row
 }
 

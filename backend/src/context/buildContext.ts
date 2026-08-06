@@ -57,6 +57,19 @@ export interface BuildContextInput {
   /** Oldest first. The last entry is the turn being answered. */
   messages: HistoryMessage[]
   tier: Tier
+  /**
+   * A collection this conversation answers from — Phase 9's Projects-style
+   * knowledge base.
+   *
+   * Retrieved from, never injected whole: a collection is a folder of
+   * documents and would not fit in any context window, which is the entire
+   * reason it is a retrieval feature rather than a bigger attachment.
+   */
+  collection?: {
+    name: string
+    /** Indexed documents only. An unindexed file has nothing to retrieve. */
+    documentIds: string[]
+  }
 }
 
 /** What happened to one attachment once the budget was applied. */
@@ -308,7 +321,41 @@ function toSource(chunk: RetrievedChunk): ContextSource {
   }
 }
 
-export async function buildContext({ messages, tier }: BuildContextInput): Promise<BuiltContext> {
+/**
+ * Share of the working budget a linked collection may take.
+ *
+ * Smaller than `ATTACHMENT_SHARE`, and deliberately so. A file attached to
+ * *this* message is what the question is about; a collection is standing
+ * background knowledge that may or may not be relevant to any given question.
+ * Letting it take the same share would starve the conversation to answer
+ * questions that were never about the collection at all.
+ */
+const COLLECTION_SHARE = 0.35
+
+/** Wraps collection passages so the model can tell reference material from the
+ *  file the user just handed it. Different tag, because they are different
+ *  things and the model should not describe a knowledge-base hit as "the
+ *  document you attached". */
+function wrapKnowledge(
+  name: string,
+  chunks: { text: string; pageNo: number | null; filename: string }[],
+): string {
+  const body = chunks
+    .map((c) => `[${c.filename}${c.pageNo != null ? `, page ${c.pageNo}` : ''}]\n${c.text}`)
+    .join('\n\n---\n\n')
+  return (
+    `<knowledge collection="${name.replace(/"/g, '&quot;')}" excerpts="${chunks.length}">\n` +
+    `${body}\n` +
+    `[... the most relevant excerpts from this collection, not its whole contents ...]\n` +
+    `</knowledge>`
+  )
+}
+
+export async function buildContext({
+  messages,
+  tier,
+  collection,
+}: BuildContextInput): Promise<BuiltContext> {
   const { numCtx } = tierConfig(tier)
   const system = systemPrompt(tier)
 
@@ -331,11 +378,36 @@ export async function buildContext({ messages, tier }: BuildContextInput): Promi
   const older = messages.slice(0, -1)
 
   const {
-    content: newestContent,
-    cost: newestCost,
+    content: newestContent0,
+    cost: newestCost0,
     outcomes,
     sources: newestSources,
   } = await fitNewest(newest, working)
+
+  /* ------------------------------------------------------------ collection -- */
+
+  // Prepended to the newest turn rather than sent as its own message: it is
+  // reference material for *this* question, and a standalone message would
+  // read to the model as something the user said.
+  let newestContent = newestContent0
+  let newestCost = newestCost0
+  const collectionSources: ContextSource[] = []
+
+  if (collection && collection.documentIds.length > 0) {
+    const budget = Math.min(
+      Math.floor(working * COLLECTION_SHARE),
+      Math.max(0, working - newestCost0 - WRAP_OVERHEAD),
+    )
+
+    if (budget > HISTORY_RETRIEVAL_FLOOR) {
+      const chunks = await retrieveChunks(collection.documentIds, newest.content, budget)
+      if (chunks.length > 0) {
+        newestContent = `${wrapKnowledge(collection.name, chunks)}\n\n${newestContent0}`
+        newestCost = estimateTokens(newestContent) + 4
+        collectionSources.push(...chunks.map(toSource))
+      }
+    }
+  }
 
   /* --------------------------------------------------------------- history -- */
 
@@ -408,6 +480,6 @@ export async function buildContext({ messages, tier }: BuildContextInput): Promi
     attachments: outcomes,
     // Newest first: these are ranked within each turn, and the turn being
     // answered is the one whose passages a reader will want at the top.
-    sources: [...newestSources, ...historySources],
+    sources: [...newestSources, ...collectionSources, ...historySources],
   }
 }
